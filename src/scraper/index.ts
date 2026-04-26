@@ -12,6 +12,7 @@ import { URL } from 'url';
 import { searchWeb } from './search.js';
 import { crawlWebsite } from './crawler.js';
 import { analyzeWebsite } from './analyzer.js';
+import { extractColors } from './extract-colors.js';
 import { getDb, upsertCompany } from '../db.js';
 import type { Company, CrawlResult } from '../types.js';
 
@@ -21,6 +22,16 @@ const DATA_DIR = path.join(process.cwd(), 'data');
 const WEBSITES_DIR = path.join(DATA_DIR, 'websites');
 
 const SUSPICIOUS = ['google.com', 'naver.com', 'wikipedia.org', 'duckduckgo.com', 'youtube.com'];
+
+function normalizeUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  let u = raw.trim();
+  // fix missing or broken scheme
+  if (/^https?:\/\//i.test(u)) return u;
+  if (/^\/\//i.test(u)) return 'https:' + u;
+  if (/^https?:\/[^/]/i.test(u)) return u.replace(/^(https?:\/)([^/])/, '$1/$2'); // http:/foo → http://foo
+  return 'https://' + u;
+}
 
 function extractDomain(urlStr: string): string {
   try { return new URL(urlStr).hostname.replace(/^www\./, ''); }
@@ -125,7 +136,20 @@ async function fromFolderMode(force: boolean): Promise<void> {
       mobileScreenshotPath: path.join(siteDir, 'screenshot-mobile.png'),
       htmlPath,
       metadataPath: metaPath,
+      galleryPath: path.join(siteDir, 'gallery.json'),
     };
+
+    // Extract pixel-based colors from screenshot
+    let pixelColors: string[] | null = null;
+    if (fs.existsSync(screenshotPath)) {
+      console.log('  Extracting colors from screenshot...');
+      pixelColors = await extractColors(screenshotPath);
+      if (pixelColors) {
+        console.log(`  ✓ Colors: ${pixelColors.slice(0, 5).join(', ')}`);
+      } else {
+        console.log('  Color extraction failed, will use LLM colors.');
+      }
+    }
 
     // Analyze with Gemini
     console.log('  Analyzing...');
@@ -137,6 +161,9 @@ async function fromFolderMode(force: boolean): Promise<void> {
       console.error(`  Analysis failed: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
+
+    // Prefer pixel-extracted colors over LLM guess
+    const finalColors = pixelColors ?? analysis.main_colors;
 
     // Save full result
     upsertCompany({
@@ -152,7 +179,7 @@ async function fromFolderMode(force: boolean): Promise<void> {
       design_quality_score: analysis.design_quality_score,
       design_last_modified_year: analysis.design_last_modified_year,
       seo_score: analysis.seo_score,
-      main_colors: JSON.stringify(analysis.main_colors),
+      main_colors: JSON.stringify(finalColors),
       mood: analysis.mood,
       style: analysis.style,
       copy: analysis.copy,
@@ -167,18 +194,20 @@ async function fromFolderMode(force: boolean): Promise<void> {
 
 // ── CSV scrape mode ───────────────────────────────────────────────────────────
 
-async function csvMode(csvPath: string, force: boolean): Promise<void> {
+async function csvMode(csvPath: string, force: boolean, inlineRows?: CsvRow[]): Promise<void> {
   console.log('\n=== NewToad Web Scraper ===');
-  console.log(`CSV: ${csvPath}  force=${force}\n`);
 
-  if (!fs.existsSync(csvPath)) {
-    console.error(`CSV not found: ${csvPath}`);
-    process.exit(1);
+  let rows: CsvRow[];
+  if (inlineRows) {
+    rows = inlineRows;
+    console.log(`URL mode  force=${force}\n`);
+  } else {
+    console.log(`CSV: ${csvPath}  force=${force}\n`);
+    if (!fs.existsSync(csvPath)) { console.error(`CSV not found: ${csvPath}`); process.exit(1); }
+    rows = csvParse(fs.readFileSync(csvPath, 'utf-8'), {
+      columns: true, skip_empty_lines: true, trim: true, bom: true,
+    });
   }
-
-  const rows: CsvRow[] = csvParse(fs.readFileSync(csvPath, 'utf-8'), {
-    columns: true, skip_empty_lines: true, trim: true, bom: true,
-  });
 
   if (rows.length === 0) { console.log('No companies in CSV.'); return; }
   console.log(`Found ${rows.length} companies.\n`);
@@ -199,7 +228,7 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
     }
 
     // Use URL from CSV if provided, otherwise search
-    let url: string | null = rows[i].url?.trim() || null;
+    let url: string | null = normalizeUrl(rows[i].url?.trim() || null);
     if (url) {
       console.log(`  URL from CSV: ${url}`);
     } else {
@@ -237,6 +266,18 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
     const relScreenshot = path.relative(DATA_DIR, crawlResult.screenshotPath);
     upsertCompany({ id: company.id, name, domain, url, screenshot_path: relScreenshot });
 
+    // Extract pixel-based colors from screenshot
+    let pixelColors: string[] | null = null;
+    if (fs.existsSync(crawlResult.screenshotPath)) {
+      console.log('  Extracting colors from screenshot...');
+      pixelColors = await extractColors(crawlResult.screenshotPath);
+      if (pixelColors) {
+        console.log(`  ✓ Colors: ${pixelColors.slice(0, 5).join(', ')}`);
+      } else {
+        console.log('  Color extraction failed, will use LLM colors.');
+      }
+    }
+
     // Analyze
     console.log('  Analyzing...');
     let analysis;
@@ -248,6 +289,9 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
       continue;
     }
 
+    // Prefer pixel-extracted colors over LLM guess
+    const finalColors = pixelColors ?? analysis.main_colors;
+
     upsertCompany({
       id: company.id, name, domain, url,
       scraped_at: new Date().toISOString(),
@@ -258,7 +302,7 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
       design_quality_score: analysis.design_quality_score,
       design_last_modified_year: analysis.design_last_modified_year,
       seo_score: analysis.seo_score,
-      main_colors: JSON.stringify(analysis.main_colors),
+      main_colors: JSON.stringify(finalColors),
       mood: analysis.mood,
       style: analysis.style,
       copy: analysis.copy,
@@ -276,10 +320,16 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
 const args = process.argv.slice(2);
 const force = args.includes('--force');
 const fromFolder = args.includes('--from-folder');
-const csvArg = args.find(a => !a.startsWith('--'));
+const urlFlagIdx = args.findIndex(a => a === '-u' || a === '--url');
+const urlArg = urlFlagIdx !== -1 ? args[urlFlagIdx + 1] : undefined;
+const csvArg = args.find(a => !a.startsWith('-'));
 
 if (fromFolder) {
   fromFolderMode(force).catch(err => { console.error(err); process.exit(1); });
+} else if (urlArg) {
+  const cleanUrl = normalizeUrl(urlArg)!;
+  csvMode('', force, [{ name: new URL(cleanUrl).hostname, url: cleanUrl }])
+    .catch(err => { console.error(err); process.exit(1); });
 } else {
   const csvPath = csvArg ?? path.join(process.cwd(), 'companies.csv');
   csvMode(csvPath, force).catch(err => { console.error(err); process.exit(1); });

@@ -31,6 +31,15 @@ export interface SiteGeneration {
   created_at?: string;
 }
 
+export interface GalleryEntry {
+  file: string;
+  label: string;
+}
+
+export interface GalleryManifest {
+  screenshots: GalleryEntry[];
+}
+
 export interface CrawlResult {
   url: string;
   domain: string;
@@ -45,6 +54,7 @@ export interface CrawlResult {
   mobileScreenshotPath: string;
   htmlPath: string;
   metadataPath: string;
+  galleryPath: string;
 }
 
 export interface AnalysisResult {

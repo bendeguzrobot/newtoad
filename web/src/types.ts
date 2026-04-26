@@ -33,9 +33,19 @@ export interface SiteGeneration {
   extra_prompt: string | null;
   generation_time_ms: number | null;
   screenshot_path: string | null;
+  mobile_screenshot_path: string | null;
   html_path: string | null;
   created_at: string;
 }
 
 export type SortField = 'seo_score' | 'design_quality_score' | 'design_last_modified_year' | 'name';
 export type SortDir = 'asc' | 'desc';
+
+export interface GalleryEntry {
+  file: string;
+  label: string;
+}
+
+export interface GalleryManifest {
+  screenshots: GalleryEntry[];
+}

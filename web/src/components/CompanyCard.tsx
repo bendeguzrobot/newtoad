@@ -37,6 +37,11 @@ export default function CompanyCard({ company }: Props) {
     ? `/data/${company.screenshot_path}`
     : null
 
+  // gradient.png lives next to screenshot.png; derive its path from the screenshot path
+  const gradientSrc = company.screenshot_path
+    ? `/data/${company.screenshot_path.replace(/screenshot\.png$/, 'gradient.png')}`
+    : null
+
   return (
     <article
       onClick={() => navigate(`/companies/${company.id}`)}
@@ -64,6 +69,18 @@ export default function CompanyCard({ company }: Props) {
           </span>
         )}
       </div>
+
+      {/* Color gradient strip */}
+      {gradientSrc && (
+        <img
+          src={gradientSrc}
+          alt="Color palette"
+          className="w-full block"
+          style={{ height: '8px', objectFit: 'cover' }}
+          loading="lazy"
+          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+        />
+      )}
 
       {/* Body */}
       <div className="p-3 space-y-2">
@@ -93,8 +110,8 @@ export default function CompanyCard({ company }: Props) {
             const colors: string[] = JSON.parse(company.main_colors)
             return (
               <div className="flex gap-1 mt-1">
-                {colors.slice(0, 5).map(c => (
-                  <span key={c} className="w-4 h-4 rounded-sm border border-gray-600 shrink-0" style={{ backgroundColor: c }} title={c} />
+                {colors.slice(0, 5).map((c, i) => (
+                  <span key={`${c}-${i}`} className="w-4 h-4 rounded-sm border border-gray-600 shrink-0" style={{ backgroundColor: c }} title={c} />
                 ))}
               </div>
             )

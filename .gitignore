@@ -15,6 +15,7 @@ data/
 .env
 .env.local
 .env.*
+!.env.example
 
 # OS
 .DS_Store
@@ -29,3 +30,9 @@ Thumbs.db
 # Playwright
 playwright-report/
 test-results/
+
+.env
+
+# Stray data files at root
+*.csv
+*.db

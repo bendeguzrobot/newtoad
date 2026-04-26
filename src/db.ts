@@ -93,11 +93,39 @@ export interface GetCompaniesOptions {
   limit?: number;
   sort?: string;
   dir?: 'asc' | 'desc';
+  // Filters
+  search?: string;
+  industry?: string;
+  company_size?: string;
+  min_score?: number;
+  max_score?: number;
+  mood?: string;
+  style?: string;
+  missing_metadata?: boolean;
+  has_metadata?: boolean;
+  missing_screenshot?: boolean;
+  has_screenshot?: boolean;
 }
 
 export function getCompanies(opts: GetCompaniesOptions = {}): { companies: Company[]; total: number } {
   const database = getDb();
-  const { page = 1, limit = 20, sort = 'created_at', dir = 'desc' } = opts;
+  const {
+    page = 1,
+    limit = 20,
+    sort = 'created_at',
+    dir = 'desc',
+    search,
+    industry,
+    company_size,
+    min_score,
+    max_score,
+    mood,
+    style,
+    missing_metadata,
+    has_metadata,
+    missing_screenshot,
+    has_screenshot,
+  } = opts;
 
   // Whitelist allowed sort columns to prevent SQL injection
   const allowedSortCols = [
@@ -108,11 +136,60 @@ export function getCompanies(opts: GetCompaniesOptions = {}): { companies: Compa
   const safeSort = allowedSortCols.includes(sort) ? sort : 'created_at';
   const safeDir = dir === 'asc' ? 'ASC' : 'DESC';
 
+  // Build WHERE clause from filters
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (search) {
+    conditions.push('(name LIKE ? OR domain LIKE ?)');
+    params.push(`%${search}%`, `%${search}%`);
+  }
+  if (industry) {
+    conditions.push('industry LIKE ?');
+    params.push(`%${industry}%`);
+  }
+  if (company_size) {
+    conditions.push('company_size = ?');
+    params.push(company_size);
+  }
+  if (min_score !== undefined && !isNaN(min_score)) {
+    conditions.push('design_quality_score >= ?');
+    params.push(min_score);
+  }
+  if (max_score !== undefined && !isNaN(max_score)) {
+    conditions.push('design_quality_score <= ?');
+    params.push(max_score);
+  }
+  if (mood) {
+    conditions.push('mood LIKE ?');
+    params.push(`%${mood}%`);
+  }
+  if (style) {
+    conditions.push('style LIKE ?');
+    params.push(`%${style}%`);
+  }
+  if (missing_metadata) {
+    conditions.push('(industry IS NULL OR what_they_sell IS NULL)');
+  }
+  if (has_metadata) {
+    conditions.push('(industry IS NOT NULL AND what_they_sell IS NOT NULL)');
+  }
+  if (missing_screenshot) {
+    conditions.push('screenshot_path IS NULL');
+  }
+  if (has_screenshot) {
+    conditions.push('screenshot_path IS NOT NULL');
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const offset = (page - 1) * limit;
-  const total = (database.prepare('SELECT COUNT(*) as count FROM companies').get() as { count: number }).count;
+
+  const total = (
+    database.prepare(`SELECT COUNT(*) as count FROM companies ${where}`).get(...params) as { count: number }
+  ).count;
   const companies = database
-    .prepare(`SELECT * FROM companies ORDER BY ${safeSort} ${safeDir} LIMIT ? OFFSET ?`)
-    .all(limit, offset) as Company[];
+    .prepare(`SELECT * FROM companies ${where} ORDER BY ${safeSort} ${safeDir} LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as Company[];
 
   return { companies, total };
 }

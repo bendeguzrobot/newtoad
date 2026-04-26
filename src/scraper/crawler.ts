@@ -2,7 +2,7 @@ import { chromium } from 'playwright';
 import axios from 'axios';
 import path from 'path';
 import fs from 'fs';
-import type { CrawlResult } from '../types.js';
+import type { CrawlResult, GalleryEntry, GalleryManifest } from '../types.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data', 'websites');
 
@@ -54,9 +54,242 @@ async function downloadImage(src: string, assetsDir: string, index: number): Pro
 }
 
 /**
+ * Attempt to detect and dismiss popups/overlays (cookie banners, GDPR dialogs, modals).
+ * Returns true if a dismissal action was performed.
+ */
+async function dismissPopups(page: import('playwright').Page): Promise<boolean> {
+  // Common button text patterns to look for (Korean + English, both cases)
+  const buttonTexts = ['닫기', '확인', '동의', 'close', 'Close', 'CLOSE', 'Accept', 'accept', 'OK', 'ok', '×', 'X', '✕', 'Agree', 'Got it', 'I agree'];
+
+  // Strategy 1: Click matching button text
+  for (const text of buttonTexts) {
+    try {
+      // Try exact text match via role
+      const btn = page.getByRole('button', { name: text, exact: true });
+      if (await btn.count() > 0) {
+        await btn.first().click({ timeout: 2000 });
+        return true;
+      }
+    } catch {
+      // continue
+    }
+
+    try {
+      // Try text-content selector (broader)
+      const btnByText = page.locator(`button:has-text("${text}")`);
+      if (await btnByText.count() > 0) {
+        await btnByText.first().click({ timeout: 2000 });
+        return true;
+      }
+    } catch {
+      // continue
+    }
+
+    try {
+      // Try aria-label
+      const btnByAria = page.locator(`[aria-label="${text}"]`);
+      if (await btnByAria.count() > 0) {
+        await btnByAria.first().click({ timeout: 2000 });
+        return true;
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  // Strategy 2: Common popup/modal close selectors (includes input[type=button] for old sites)
+  const closeSelectors = [
+    '.modal-close',
+    '.popup-close',
+    '.cookie-close',
+    '.btn-close',
+    '.close_windows_button',
+    '[class*="close"]',
+    '[class*="dismiss"]',
+    '[class*="accept"]',
+    '[class*="agree"]',
+    '[id*="close"]',
+    '[id*="dismiss"]',
+    'input[type="button"][value*="close"]',
+    'input[type="button"][value*="Close"]',
+    'input[type="button"][value*="닫기"]',
+    'input[type="button"][value*="확인"]',
+    'input[type="button"][value*="×"]',
+    'input[type="button"][value*="✕"]',
+    '[id*="cookie"] button',
+    '[class*="cookie"] button',
+    '[class*="gdpr"] button',
+    '[class*="consent"] button',
+    '#cookieConsent button',
+    '.cookie-banner button',
+    '.cookie-notice button',
+  ];
+
+  for (const sel of closeSelectors) {
+    try {
+      const el = page.locator(sel);
+      if (await el.count() > 0) {
+        await el.first().click({ timeout: 2000 });
+        return true;
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  // Strategy 3: Press Escape
+  try {
+    await page.keyboard.press('Escape');
+    // Check if any visible overlay/modal is now gone — just optimistically return true
+    // We'll see from the screenshot whether it worked
+    return true;
+  } catch {
+    // continue
+  }
+
+  // Strategy 4: Click top-left corner outside any modal
+  try {
+    await page.mouse.click(10, 10);
+    return true;
+  } catch {
+    // continue
+  }
+
+  return false;
+}
+
+/**
+ * Check whether the page has any visible popup/overlay/modal indicators.
+ */
+async function hasVisiblePopup(page: import('playwright').Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const overlaySelectors = [
+      '[class*="modal"]',
+      '[class*="popup"]',
+      '[class*="overlay"]',
+      '[class*="cookie"]',
+      '[class*="gdpr"]',
+      '[class*="consent"]',
+      '[class*="banner"]',
+      '[id*="modal"]',
+      '[id*="popup"]',
+      '[id*="cookie"]',
+      '[id*="gdpr"]',
+    ];
+
+    for (const sel of overlaySelectors) {
+      const els = document.querySelectorAll(sel);
+      for (const el of els) {
+        const style = window.getComputedStyle(el);
+        if (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          (el as HTMLElement).offsetHeight > 0
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  });
+}
+
+/**
+ * Navigate to nav links and take screenshots of up to 4 unique destinations.
+ * Returns list of gallery entries for successfully captured nav screenshots.
+ */
+async function captureNavScreenshots(
+  page: import('playwright').Page,
+  baseUrl: string,
+  siteDir: string,
+): Promise<GalleryEntry[]> {
+  const entries: GalleryEntry[] = [];
+
+  // Collect nav link hrefs — try specific nav selectors first, fall back to all page links.
+  // NOTE: No inner named functions inside evaluate — tsx/esbuild wraps them with __name()
+  // which is not available in the browser serialization context.
+  const navLinks: Array<{ href: string; label: string }> = await page.evaluate((pageUrl: string) => {
+    const seen = new Set<string>();
+    const results: Array<{ href: string; label: string }> = [];
+    const baseOrigin = new URL(pageUrl).origin;
+    const currentPath = new URL(pageUrl).pathname;
+    const skipExt = ['.css', '.js', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.woff', '.ttf', '.pdf'];
+
+    const candidates: Element[] = [];
+
+    // Preferred: semantic nav elements
+    const navSelectors = ['nav a', 'header a', '.gnb a', '#gnb a', '#nav a', '.nav a', '.navigation a', '.menu a', '#menu a'];
+    for (const sel of navSelectors) {
+      document.querySelectorAll(sel).forEach(el => candidates.push(el));
+    }
+    // Fallback: all anchors on page
+    if (candidates.length === 0) {
+      document.querySelectorAll('a[href]').forEach(el => candidates.push(el));
+    }
+
+    for (const el of candidates) {
+      const href = (el as HTMLAnchorElement).href;
+      if (!href) continue;
+      try {
+        const linkUrl = new URL(href);
+        if (linkUrl.origin !== baseOrigin) continue;
+        const lowerPath = linkUrl.pathname.toLowerCase();
+        if (skipExt.some(ext => lowerPath.endsWith(ext))) continue;
+        if (linkUrl.pathname === currentPath && linkUrl.hash) continue;
+        if (linkUrl.href === pageUrl || linkUrl.href === pageUrl + '/') continue;
+        const key = linkUrl.pathname + linkUrl.search;
+        if (seen.has(key) || key === '/' || key === '') continue;
+        seen.add(key);
+        const text = (el.textContent || '').trim().slice(0, 50);
+        results.push({ href: linkUrl.href, label: text || linkUrl.pathname });
+      } catch { /* ignore invalid URLs */ }
+      if (results.length >= 4) break;
+    }
+
+    return results;
+  }, baseUrl);
+
+  let navIndex = 0;
+  for (const link of navLinks) {
+    if (navIndex >= 4) break;
+    try {
+      await page.goto(link.href, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(1500);
+
+      const filename = `screenshot-nav-${navIndex}.png`;
+      const filePath = path.join(siteDir, filename);
+      await page.screenshot({ path: filePath, fullPage: true });
+
+      entries.push({ file: filename, label: link.label || `Page ${navIndex + 1}` });
+      navIndex++;
+
+      // Navigate back to the base page for next iteration
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(800);
+    } catch {
+      // Skip this link on any error (timeout, navigation error, etc.)
+      try {
+        // Try to recover by going back to base
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(500);
+      } catch {
+        // If we can't recover, break out of nav capture
+        break;
+      }
+    }
+  }
+
+  return entries;
+}
+
+/**
  * Crawl a website using Playwright:
  * - Take full-page screenshot
  * - Take mobile screenshot
+ * - Detect & dismiss popups, take clean screenshot
+ * - Navigate top-level nav links, take up to 4 nav screenshots
+ * - Write gallery.json manifest
  * - Extract page metadata and text
  * - Download images (up to 10)
  * - Save HTML
@@ -72,8 +305,10 @@ export async function crawlWebsite(url: string, domain: string): Promise<CrawlRe
 
   const screenshotPath = path.join(siteDir, 'screenshot.png');
   const mobileScreenshotPath = path.join(siteDir, 'screenshot-mobile.png');
+  const cleanScreenshotPath = path.join(siteDir, 'screenshot-clean.png');
   const htmlPath = path.join(siteDir, 'index.html');
   const metadataPath = path.join(siteDir, 'metadata.json');
+  const galleryPath = path.join(siteDir, 'gallery.json');
 
   const browser = await chromium.launch({ headless: true });
 
@@ -93,8 +328,51 @@ export async function crawlWebsite(url: string, domain: string): Promise<CrawlRe
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(2000);
 
-    // Full-page screenshot
+    // Full-page screenshot (landing)
     await page.screenshot({ path: screenshotPath, fullPage: true });
+
+    // Gallery entries — always start with the landing screenshot
+    const galleryEntries: GalleryEntry[] = [
+      { file: 'screenshot.png', label: 'Landing' },
+    ];
+
+    // --- Popup detection & dismissal ---
+    let tookCleanShot = false;
+    try {
+      const popupDetected = await hasVisiblePopup(page);
+      if (popupDetected) {
+        const dismissed = await dismissPopups(page);
+        if (dismissed) {
+          await page.waitForTimeout(800);
+          await page.screenshot({ path: cleanScreenshotPath, fullPage: true });
+          tookCleanShot = true;
+          galleryEntries.push({ file: 'screenshot-clean.png', label: 'Landing (no popups)' });
+        }
+      }
+    } catch {
+      // Popup detection is best-effort — don't fail the whole crawl
+    }
+
+    // --- Nav screenshots ---
+    // Re-load the base page fresh before nav traversal (popup dismissal may have navigated)
+    try {
+      if (tookCleanShot) {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.waitForTimeout(1000);
+      }
+      const navEntries = await captureNavScreenshots(page, url, siteDir);
+      galleryEntries.push(...navEntries);
+    } catch {
+      // Nav capture is best-effort
+    }
+
+    // Make sure we're back on the original page for data extraction
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(1000);
+    } catch {
+      // ignore — we'll use whatever state the page is in
+    }
 
     // Extract data
     const title = await page.title();
@@ -160,6 +438,13 @@ export async function crawlWebsite(url: string, domain: string): Promise<CrawlRe
       if (localPath) downloadedImages.push(localPath);
     }
 
+    // --- Write gallery.json (only include files that actually exist) ---
+    const verifiedEntries = galleryEntries.filter(entry =>
+      fs.existsSync(path.join(siteDir, entry.file))
+    );
+    const gallery: GalleryManifest = { screenshots: verifiedEntries };
+    fs.writeFileSync(galleryPath, JSON.stringify(gallery, null, 2), 'utf-8');
+
     // --- Write metadata.json ---
     const metadata = {
       url,
@@ -174,6 +459,7 @@ export async function crawlWebsite(url: string, domain: string): Promise<CrawlRe
       screenshotPath,
       mobileScreenshotPath,
       htmlPath,
+      galleryPath,
     };
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
 
@@ -191,6 +477,7 @@ export async function crawlWebsite(url: string, domain: string): Promise<CrawlRe
       mobileScreenshotPath,
       htmlPath,
       metadataPath,
+      galleryPath,
     };
   } finally {
     await browser.close();

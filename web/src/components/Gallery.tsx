@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { fetchCompanies } from '../api'
+import type { FetchCompaniesParams } from '../api'
 import type { Company, SortDir, SortField } from '../types'
 import CompanyCard from './CompanyCard'
 
@@ -11,6 +12,30 @@ const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: 'design_last_modified_year', label: 'Last Modified Year' },
   { value: 'name', label: 'Name' },
 ]
+
+const SIZE_OPTIONS = ['small', 'medium', 'large'] as const
+
+interface Filters {
+  industry: string
+  company_size: string
+  min_score: string
+  max_score: string
+  mood: string
+  style: string
+  metadata_filter: '' | 'missing' | 'has'
+  screenshot_filter: '' | 'missing' | 'has'
+}
+
+const EMPTY_FILTERS: Filters = {
+  industry: '',
+  company_size: '',
+  min_score: '',
+  max_score: '',
+  mood: '',
+  style: '',
+  metadata_filter: '',
+  screenshot_filter: '',
+}
 
 function Skeleton() {
   return (
@@ -58,12 +83,44 @@ export default function Gallery() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Search
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const isTyping = search !== debouncedSearch
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedSearch(search)
+      setPage(1)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  // Filter state (draft = what user is typing; applied = what's sent to API)
+  const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS)
+  const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS)
+
+  const hasActiveFilters = Object.values(applied).some((v) => v !== '')
+
   const load = useCallback(
-    async (p: number, s: SortField, d: SortDir) => {
+    async (p: number, s: SortField, d: SortDir, filters: Filters, q: string) => {
       setLoading(true)
       setError(null)
       try {
-        const data = await fetchCompanies({ page: p, limit: LIMIT, sort: s, dir: d })
+        const params: FetchCompaniesParams = { page: p, limit: LIMIT, sort: s, dir: d }
+        if (q) params.search = q
+        if (filters.industry) params.industry = filters.industry
+        if (filters.company_size) params.company_size = filters.company_size
+        if (filters.min_score !== '') params.min_score = Number(filters.min_score)
+        if (filters.max_score !== '') params.max_score = Number(filters.max_score)
+        if (filters.mood) params.mood = filters.mood
+        if (filters.style) params.style = filters.style
+        if (filters.metadata_filter === 'missing') params.missing_metadata = true
+        if (filters.metadata_filter === 'has') params.has_metadata = true
+        if (filters.screenshot_filter === 'missing') params.missing_screenshot = true
+        if (filters.screenshot_filter === 'has') params.has_screenshot = true
+
+        const data = await fetchCompanies(params)
         setCompanies(data.companies)
         setTotal(data.total)
       } catch (err) {
@@ -76,8 +133,8 @@ export default function Gallery() {
   )
 
   useEffect(() => {
-    load(page, sort, dir)
-  }, [page, sort, dir, load])
+    load(page, sort, dir, applied, debouncedSearch)
+  }, [page, sort, dir, applied, debouncedSearch, load])
 
   const totalPages = Math.max(1, Math.ceil(total / LIMIT))
 
@@ -96,6 +153,21 @@ export default function Gallery() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  function handleApply() {
+    setApplied({ ...draft })
+    setPage(1)
+  }
+
+  function handleReset() {
+    setDraft(EMPTY_FILTERS)
+    setApplied(EMPTY_FILTERS)
+    setPage(1)
+  }
+
+  function updateDraft(field: keyof Filters, value: string | boolean) {
+    setDraft((prev) => ({ ...prev, [field]: value }))
+  }
+
   // Build visible page numbers (show up to 7 around current)
   const pageNumbers: number[] = []
   if (totalPages <= 7) {
@@ -112,7 +184,29 @@ export default function Gallery() {
 
   return (
     <div className="space-y-6">
-      {/* Controls */}
+      {/* Search */}
+      <div className="relative">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search companies…"
+          className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-xl px-4 py-2.5 pl-10 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        />
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
+          {isTyping || loading ? '⟳' : '🔍'}
+        </span>
+        {search && (
+          <button
+            onClick={() => setSearch('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-lg leading-none"
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {/* Sort controls */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-400 whitespace-nowrap">Sort by</label>
@@ -143,6 +237,144 @@ export default function Gallery() {
             {total} companies
           </span>
         )}
+      </div>
+
+      {/* Filter bar */}
+      <div className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 space-y-3">
+        <div className="flex flex-wrap gap-3">
+          {/* Industry */}
+          <div className="flex flex-col gap-1 min-w-[180px] flex-1">
+            <label className="text-xs text-gray-400">Industry</label>
+            <input
+              type="text"
+              value={draft.industry}
+              onChange={(e) => updateDraft('industry', e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleApply()}
+              placeholder="e.g. 반도체"
+              className="bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+
+          {/* Company size */}
+          <div className="flex flex-col gap-1 min-w-[140px]">
+            <label className="text-xs text-gray-400">Company size</label>
+            <select
+              value={draft.company_size}
+              onChange={(e) => updateDraft('company_size', e.target.value)}
+              className="bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value="">All sizes</option>
+              {SIZE_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s.charAt(0).toUpperCase() + s.slice(1)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Design score range */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400">Design score</label>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                value={draft.min_score}
+                onChange={(e) => updateDraft('min_score', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleApply()}
+                placeholder="Min"
+                min={0}
+                max={100}
+                className="w-20 bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <span className="text-gray-600 text-sm">–</span>
+              <input
+                type="number"
+                value={draft.max_score}
+                onChange={(e) => updateDraft('max_score', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleApply()}
+                placeholder="Max"
+                min={0}
+                max={100}
+                className="w-20 bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+          </div>
+
+          {/* Mood */}
+          <div className="flex flex-col gap-1 min-w-[140px] flex-1">
+            <label className="text-xs text-gray-400">Mood</label>
+            <input
+              type="text"
+              value={draft.mood}
+              onChange={(e) => updateDraft('mood', e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleApply()}
+              placeholder="e.g. professional"
+              className="bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+
+          {/* Style */}
+          <div className="flex flex-col gap-1 min-w-[140px] flex-1">
+            <label className="text-xs text-gray-400">Style</label>
+            <input
+              type="text"
+              value={draft.style}
+              onChange={(e) => updateDraft('style', e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleApply()}
+              placeholder="e.g. minimal"
+              className="bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+
+          {/* Metadata filter */}
+          <div className="flex flex-col gap-1 min-w-[150px]">
+            <label className="text-xs text-gray-400">Metadata</label>
+            <select
+              value={draft.metadata_filter}
+              onChange={(e) => updateDraft('metadata_filter', e.target.value)}
+              className="bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value="">All</option>
+              <option value="has">Has metadata</option>
+              <option value="missing">Missing metadata</option>
+            </select>
+          </div>
+
+          {/* Screenshot filter */}
+          <div className="flex flex-col gap-1 min-w-[150px]">
+            <label className="text-xs text-gray-400">Screenshot</label>
+            <select
+              value={draft.screenshot_filter}
+              onChange={(e) => updateDraft('screenshot_filter', e.target.value)}
+              className="bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value="">All</option>
+              <option value="has">Has screenshot</option>
+              <option value="missing">Missing screenshot</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            onClick={handleApply}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
+          >
+            Apply
+          </button>
+          {hasActiveFilters && (
+            <button
+              onClick={handleReset}
+              className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm px-4 py-1.5 rounded-lg transition-colors"
+            >
+              Reset
+            </button>
+          )}
+          {hasActiveFilters && (
+            <span className="text-xs text-emerald-400 ml-1">Filters active</span>
+          )}
+        </div>
       </div>
 
       {/* Error */}
