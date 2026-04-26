@@ -1,7 +1,5 @@
-import { GoogleGenAI } from '@google/genai';
+import { llm } from '../llm/index.js';
 import type { CrawlResult, AnalysisResult } from '../types.js';
-
-const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const SYSTEM_PROMPT = `You are an expert web analyst specializing in Korean business websites.
 Your job is to analyze website content and extract structured information about the company and its web presence.
@@ -36,7 +34,7 @@ For company_size: small (<50 employees or local business), medium (50-500 employ
 export async function analyzeWebsite(crawlResult: CrawlResult): Promise<AnalysisResult> {
   const { title, metaDescription, visibleText, htmlHead } = crawlResult;
 
-  const userContent = `Please analyze this Korean company website:
+  const prompt = `Please analyze this Korean company website:
 
 ## Page Title
 ${title || '(no title)'}
@@ -52,15 +50,9 @@ ${visibleText || '(no visible text extracted)'}
 
 Respond with ONLY the JSON object as described in your instructions.`;
 
-  const response = await client.models.generateContent({
-    model: 'gemini-2.5-flash',
-    config: { systemInstruction: SYSTEM_PROMPT },
-    contents: userContent,
-  });
+  let rawText = await llm.complete({ system: SYSTEM_PROMPT, prompt });
+  rawText = rawText.trim();
 
-  let rawText = (response.text ?? '').trim();
-
-  // Strip markdown code fences if present
   if (rawText.startsWith('```')) {
     rawText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
   }
@@ -69,26 +61,23 @@ Respond with ONLY the JSON object as described in your instructions.`;
   try {
     parsed = JSON.parse(rawText);
   } catch {
-    throw new Error(`Failed to parse Gemini response as JSON: ${rawText.slice(0, 200)}`);
+    throw new Error(`Failed to parse LLM response as JSON: ${rawText.slice(0, 200)}`);
   }
 
   const obj = parsed as Record<string, unknown>;
 
-  const result: AnalysisResult = {
+  return {
     industry: typeof obj.industry === 'string' ? obj.industry : 'unknown',
     what_they_sell: typeof obj.what_they_sell === 'string' ? obj.what_they_sell : 'unknown',
     company_size: (['small', 'medium', 'large', 'unknown'] as const).includes(obj.company_size as 'small' | 'medium' | 'large' | 'unknown')
       ? (obj.company_size as 'small' | 'medium' | 'large' | 'unknown')
       : 'unknown',
     design_quality_score: typeof obj.design_quality_score === 'number'
-      ? Math.max(0, Math.min(100, Math.round(obj.design_quality_score)))
-      : 50,
+      ? Math.max(0, Math.min(100, Math.round(obj.design_quality_score))) : 50,
     design_last_modified_year: typeof obj.design_last_modified_year === 'number'
-      ? Math.max(2010, Math.min(2025, Math.round(obj.design_last_modified_year)))
-      : 2020,
+      ? Math.max(2010, Math.min(2025, Math.round(obj.design_last_modified_year))) : 2020,
     seo_score: typeof obj.seo_score === 'number'
-      ? Math.max(0, Math.min(100, Math.round(obj.seo_score)))
-      : 50,
+      ? Math.max(0, Math.min(100, Math.round(obj.seo_score))) : 50,
     main_colors: Array.isArray(obj.main_colors)
       ? (obj.main_colors as unknown[]).filter(c => typeof c === 'string').slice(0, 5) as string[]
       : ['#000000', '#ffffff', '#888888'],
@@ -96,6 +85,4 @@ Respond with ONLY the JSON object as described in your instructions.`;
     style: typeof obj.style === 'string' ? obj.style : 'corporate',
     copy: typeof obj.copy === 'string' ? obj.copy : '',
   };
-
-  return result;
 }

@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { llm } from '../llm/index.js';
 import { chromium } from 'playwright';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
@@ -98,18 +98,15 @@ export async function generateWebsite(
   const screenshotFilePath = path.join(genDir, 'screenshot.png');
   const mobileScreenshotFilePath = path.join(genDir, 'screenshot-mobile.png');
 
-  // ── Step 1: Call Gemini ────────────────────────────────────────────────────
+  // ── Step 1: Call LLM ──────────────────────────────────────────────────────
   const startTime = Date.now();
 
-  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const prompt = buildPrompt(company, opts);
-
-  const response = await client.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: prompt,
+  const userPrompt = buildPrompt(company, opts);
+  const rawText = await llm.complete({
+    system: 'You are an expert web designer. Output only raw HTML — no explanation, no markdown.',
+    prompt: userPrompt,
+    maxTokens: 8192,
   });
-
-  const rawText = response.text ?? '';
   const html = stripFences(rawText);
 
   const generationTimeMs = Date.now() - startTime;

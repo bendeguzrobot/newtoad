@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
-if (!process.env.GEMINI_API_KEY) {
-  console.error('\nERROR: GEMINI_API_KEY is not set. Add it to .env or export it.\n');
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('\nERROR: ANTHROPIC_API_KEY is not set. Add it to .env or export it.\n');
   process.exit(1);
 }
 

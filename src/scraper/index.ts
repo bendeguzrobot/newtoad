@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
-if (!process.env.GEMINI_API_KEY) {
-  console.error('\nERROR: GEMINI_API_KEY is not set. Add it to .env or export it.\n');
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('\nERROR: ANTHROPIC_API_KEY is not set. Add it to .env or export it.\n');
   process.exit(1);
 }
 
@@ -128,7 +128,7 @@ async function fromFolderMode(force: boolean): Promise<void> {
     };
 
     // Analyze with Gemini
-    console.log('  Analyzing with Gemini...');
+    console.log('  Analyzing...');
     let analysis;
     try {
       analysis = await analyzeWebsite(crawlResult);
@@ -233,7 +233,7 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
     upsertCompany({ id: company.id, name, domain, url, screenshot_path: relScreenshot });
 
     // Analyze
-    console.log('  Analyzing with Gemini...');
+    console.log('  Analyzing...');
     let analysis;
     try {
       analysis = await analyzeWebsite(crawlResult);
