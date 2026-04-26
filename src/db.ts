@@ -36,6 +36,7 @@ export function getDb(): Database.Database {
       mood TEXT,
       style TEXT,
       copy TEXT,
+      screenshot_count INTEGER DEFAULT 0,
       upgraded_webpage_count INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -52,6 +53,9 @@ export function getDb(): Database.Database {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  // Migrations for columns added after initial schema
+  try { db.exec('ALTER TABLE companies ADD COLUMN screenshot_count INTEGER DEFAULT 0'); } catch { /* already exists */ }
 
   return db;
 }
@@ -105,6 +109,7 @@ export interface GetCompaniesOptions {
   has_metadata?: boolean;
   missing_screenshot?: boolean;
   has_screenshot?: boolean;
+  has_multiple_screenshots?: boolean;
 }
 
 export function getCompanies(opts: GetCompaniesOptions = {}): { companies: Company[]; total: number } {
@@ -125,13 +130,14 @@ export function getCompanies(opts: GetCompaniesOptions = {}): { companies: Compa
     has_metadata,
     missing_screenshot,
     has_screenshot,
+    has_multiple_screenshots,
   } = opts;
 
   // Whitelist allowed sort columns to prevent SQL injection
   const allowedSortCols = [
     'id', 'name', 'domain', 'scraped_at', 'industry', 'company_size',
     'design_quality_score', 'design_last_modified_year', 'seo_score',
-    'upgraded_webpage_count', 'created_at'
+    'screenshot_count', 'upgraded_webpage_count', 'created_at'
   ];
   const safeSort = allowedSortCols.includes(sort) ? sort : 'created_at';
   const safeDir = dir === 'asc' ? 'ASC' : 'DESC';
@@ -179,6 +185,9 @@ export function getCompanies(opts: GetCompaniesOptions = {}): { companies: Compa
   }
   if (has_screenshot) {
     conditions.push('screenshot_path IS NOT NULL');
+  }
+  if (has_multiple_screenshots) {
+    conditions.push('screenshot_count > 1');
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

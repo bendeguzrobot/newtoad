@@ -15,6 +15,7 @@ export interface Company {
   mood: string | null;
   style: string | null;
   copy: string | null;
+  screenshot_count: number | null;
   upgraded_webpage_count: number;
   created_at: string;
 }
@@ -38,7 +39,7 @@ export interface SiteGeneration {
   created_at: string;
 }
 
-export type SortField = 'seo_score' | 'design_quality_score' | 'design_last_modified_year' | 'name';
+export type SortField = 'seo_score' | 'design_quality_score' | 'design_last_modified_year' | 'name' | 'scraped_at' | 'screenshot_count';
 export type SortDir = 'asc' | 'desc';
 
 export interface GalleryEntry {

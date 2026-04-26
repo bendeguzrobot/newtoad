@@ -15,6 +15,7 @@ export interface Company {
   mood?: string | null;
   style?: string | null;
   copy?: string | null;
+  screenshot_count?: number | null;
   upgraded_webpage_count?: number;
   created_at?: string;
 }

@@ -60,8 +60,9 @@ app.get('/api/companies', (req: Request, res: Response, next: NextFunction) => {
     const has_metadata = req.query.has_metadata === 'true';
     const missing_screenshot = req.query.missing_screenshot === 'true';
     const has_screenshot = req.query.has_screenshot === 'true';
+    const has_multiple_screenshots = req.query.has_multiple_screenshots === 'true';
 
-    const { companies, total } = getCompanies({ page, limit, sort, dir, search, industry, company_size, min_score, max_score, mood, style, missing_metadata, has_metadata, missing_screenshot, has_screenshot });
+    const { companies, total } = getCompanies({ page, limit, sort, dir, search, industry, company_size, min_score, max_score, mood, style, missing_metadata, has_metadata, missing_screenshot, has_screenshot, has_multiple_screenshots });
 
     res.json({ companies, total, page, limit });
   } catch (err) {

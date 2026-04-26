@@ -3,10 +3,74 @@ import { chromium } from 'playwright';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 import { getDb, saveGeneration, incrementUpgradedCount } from '../db.js';
 import type { Company, SiteGeneration, GalleryManifest } from '../types.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data', 'websites');
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+// Curated free HTML5 template demo pages (html5up.net — MIT licensed)
+const TEMPLATE_DEMOS = [
+  'https://html5up.net/stellar/demo',
+  'https://html5up.net/paradigm-shift/demo',
+  'https://html5up.net/landed/demo',
+  'https://html5up.net/hyperspace/demo',
+  'https://html5up.net/dimension/demo',
+  'https://html5up.net/story/demo',
+];
+
+async function searchTemplateUrl(industry?: string): Promise<string | null> {
+  const query = `html5 landing page template free${industry ? ` ${industry}` : ''}`;
+  try {
+    const res = await axios.post(
+      'https://html.duckduckgo.com/html/',
+      new URLSearchParams({ q: query }).toString(),
+      { headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 8000 }
+    );
+    const html: string = typeof res.data === 'string' ? res.data : String(res.data);
+    const m = /uddg=([^&"]+)/.exec(html);
+    if (m) {
+      const url = decodeURIComponent(m[1]);
+      if (url.startsWith('http') && !url.includes('duckduckgo.com')) return url;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function fetchTemplateHTML(industry?: string): Promise<string | null> {
+  // Try DDG search first; fall back to curated list
+  let url = await searchTemplateUrl(industry);
+  if (!url) {
+    url = TEMPLATE_DEMOS[Math.floor(Math.random() * TEMPLATE_DEMOS.length)];
+  }
+
+  try {
+    const res = await axios.get(url, {
+      headers: { 'User-Agent': UA, Accept: 'text/html' },
+      timeout: 8000,
+      maxContentLength: 600_000,
+    });
+    const raw: string = typeof res.data === 'string' ? res.data : String(res.data);
+
+    // Strip scripts, styles, and leaf text — keep tag skeleton only
+    const skeleton = raw
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      // collapse text nodes to single space
+      .replace(/>[^<]{2,}</g, '> ')
+      // collapse whitespace
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      .slice(0, 6000);
+
+    return `Template source: ${url}\n\n${skeleton}`;
+  } catch {
+    return null;
+  }
+}
 
 export interface GenerateOptions {
   extra_prompt?: string;
@@ -37,7 +101,7 @@ function loadGalleryImages(domain: string): Buffer[] {
   }
 }
 
-function buildPrompt(company: Company, opts: GenerateOptions, hasImages: boolean): string {
+function buildPrompt(company: Company, opts: GenerateOptions, hasImages: boolean, templateHTML?: string | null): string {
   let mainColors: string[] = [];
   if (opts.color_board && opts.color_board.length > 0) {
     mainColors = opts.color_board;
@@ -82,20 +146,23 @@ ${screenshotsNote}${copyBlock}${assetsBlock}`;
     prompt += `\n\nLanguage: Generate ALL website copy and UI text in ${opts.language}. The HTML tag must be \`<html lang="${code}">\`.`;
   }
 
+  if (templateHTML) {
+    prompt += `\n\nHTML5 landing page template (structural reference — use this layout skeleton, NOT its content or colors):\n\`\`\`\n${templateHTML}\n\`\`\``;
+  }
+
   if (opts.extra_prompt) prompt += `\n\nExtra instructions from user: ${opts.extra_prompt}`;
 
   prompt += `
 
 Design brief:
-- Create a minimalist single-page website
-- Aesthetic: clean minimalist — generous whitespace, restrained typography, one strong accent color
-- Do NOT copy the old design — improve it radically while keeping the brand identity
+- Base your layout on the HTML5 landing page template structure provided above
+- Sections: full-viewport hero with headline + CTA button, services/products feature grid, brief about, optional gallery strip (if images), contact block + footer
+- Aesthetic: clean modern — generous whitespace, strong typographic hierarchy, one accent color from the brand palette
+- Do NOT replicate the old site — bring the brand's identity into a fresh template-quality layout
 - Use the extracted copy verbatim where possible; trim or restructure freely
-- Sections: bold hero (company name + one-line tagline), brief about, products/services grid, contact CTA
-- Typography: pick one clean Google Font (e.g. Inter, Pretendard, Noto Sans KR for Korean)
-- If assets are provided, evaluate them — use the sharpest and most relevant ones; skip blurry or irrelevant images
-- Place the best image in the hero section
-- Subtle details allowed: thin borders, soft shadows, smooth hover transitions (CSS only)
+- Typography: one clean Google Font (e.g. Inter, Pretendard, Noto Sans KR for Korean)
+- If assets are provided, evaluate — use the sharpest, most relevant ones in appropriate sections (hero background, service thumbnails); skip blurry or irrelevant ones
+- Subtle details: thin borders, soft shadows, smooth hover transitions (CSS only)
 
 Technical:
 - Single HTML file, ALL CSS in <style> tag, NO external CSS frameworks
@@ -138,9 +205,18 @@ export async function generateWebsite(
   // ── Step 1: Load gallery screenshots for vision ────────────────────────────
   const images = loadGalleryImages(domain);
 
-  // ── Step 2: Call LLM ───────────────────────────────────────────────────────
+  // ── Step 2: Fetch HTML5 template as structural reference ───────────────────
+  console.log('Fetching HTML5 landing page template...');
+  const templateHTML = await fetchTemplateHTML(company.industry ?? undefined);
+  if (templateHTML) {
+    console.log(`Template fetched (${templateHTML.length} chars)`);
+  } else {
+    console.log('Template fetch failed, continuing without it');
+  }
+
+  // ── Step 3: Call LLM ───────────────────────────────────────────────────────
   const startTime = Date.now();
-  const userPrompt = buildPrompt(company, opts, images.length > 0);
+  const userPrompt = buildPrompt(company, opts, images.length > 0, templateHTML);
 
   const rawText = await llm.complete({
     system: 'You are a senior web designer specializing in clean, minimalist single-page redesigns. Output only raw HTML — no explanation, no markdown fences, no commentary.',

@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { fetchCompanies } from '../api'
 import type { FetchCompaniesParams } from '../api'
 import type { Company, SortDir, SortField } from '../types'
@@ -10,6 +11,8 @@ const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: 'seo_score', label: 'SEO Score' },
   { value: 'design_quality_score', label: 'Design Quality' },
   { value: 'design_last_modified_year', label: 'Last Modified Year' },
+  { value: 'screenshot_count', label: 'Screenshot Count' },
+  { value: 'scraped_at', label: 'Scrape Date' },
   { value: 'name', label: 'Name' },
 ]
 
@@ -23,7 +26,7 @@ interface Filters {
   mood: string
   style: string
   metadata_filter: '' | 'missing' | 'has'
-  screenshot_filter: '' | 'missing' | 'has'
+  screenshot_filter: '' | 'missing' | 'has' | 'multiple'
 }
 
 const EMPTY_FILTERS: Filters = {
@@ -35,6 +38,21 @@ const EMPTY_FILTERS: Filters = {
   style: '',
   metadata_filter: '',
   screenshot_filter: '',
+}
+
+function filtersFromParams(params: URLSearchParams): Filters {
+  const mf = params.get('metadata_filter') || ''
+  const sf = params.get('screenshot_filter') || ''
+  return {
+    industry: params.get('industry') || '',
+    company_size: params.get('company_size') || '',
+    min_score: params.get('min_score') || '',
+    max_score: params.get('max_score') || '',
+    mood: params.get('mood') || '',
+    style: params.get('style') || '',
+    metadata_filter: (mf === 'missing' || mf === 'has') ? mf : '',
+    screenshot_filter: (sf === 'missing' || sf === 'has' || sf === 'multiple') ? sf : '',
+  }
 }
 
 function Skeleton() {
@@ -75,98 +93,160 @@ function PageButton({
 }
 
 export default function Gallery() {
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // URL is single source of truth for these
+  const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10))
+  const sort = (searchParams.get('sort') || 'seo_score') as SortField
+  const dir = (searchParams.get('dir') || 'desc') as SortDir
+  const search = searchParams.get('search') || ''
+  const applied = filtersFromParams(searchParams)
+
+  // Local state only
   const [companies, setCompanies] = useState<Company[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [sort, setSort] = useState<SortField>('seo_score')
-  const [dir, setDir] = useState<SortDir>('desc')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [draft, setDraft] = useState<Filters>(() => filtersFromParams(searchParams))
+  const [searchInput, setSearchInput] = useState(search)
 
-  // Search
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const isTyping = search !== debouncedSearch
+  const hasActiveFilters = Object.values(applied).some((v) => v !== '') || search !== ''
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setDebouncedSearch(search)
-      setPage(1)
+  // Debounce search input → URL
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function handleSearchChange(value: string) {
+    setSearchInput(value)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        if (value) next.set('search', value)
+        else next.delete('search')
+        next.delete('page')
+        return next
+      }, { replace: true })
     }, 300)
-    return () => clearTimeout(t)
-  }, [search])
+  }
 
-  // Filter state (draft = what user is typing; applied = what's sent to API)
-  const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS)
-  const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS)
+  function clearSearch() {
+    setSearchInput('')
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.delete('search')
+      next.delete('page')
+      return next
+    }, { replace: true })
+  }
 
-  const hasActiveFilters = Object.values(applied).some((v) => v !== '')
-
-  const load = useCallback(
-    async (p: number, s: SortField, d: SortDir, filters: Filters, q: string) => {
-      setLoading(true)
-      setError(null)
-      try {
-        const params: FetchCompaniesParams = { page: p, limit: LIMIT, sort: s, dir: d }
-        if (q) params.search = q
-        if (filters.industry) params.industry = filters.industry
-        if (filters.company_size) params.company_size = filters.company_size
-        if (filters.min_score !== '') params.min_score = Number(filters.min_score)
-        if (filters.max_score !== '') params.max_score = Number(filters.max_score)
-        if (filters.mood) params.mood = filters.mood
-        if (filters.style) params.style = filters.style
-        if (filters.metadata_filter === 'missing') params.missing_metadata = true
-        if (filters.metadata_filter === 'has') params.has_metadata = true
-        if (filters.screenshot_filter === 'missing') params.missing_screenshot = true
-        if (filters.screenshot_filter === 'has') params.has_screenshot = true
-
-        const data = await fetchCompanies(params)
-        setCompanies(data.companies)
-        setTotal(data.total)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load companies')
-      } finally {
-        setLoading(false)
-      }
-    },
-    [],
-  )
-
+  // Fetch when URL changes
   useEffect(() => {
-    load(page, sort, dir, applied, debouncedSearch)
-  }, [page, sort, dir, applied, debouncedSearch, load])
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+
+    const params: FetchCompaniesParams = { page, limit: LIMIT, sort, dir }
+    if (search) params.search = search
+    if (applied.industry) params.industry = applied.industry
+    if (applied.company_size) params.company_size = applied.company_size
+    if (applied.min_score !== '') params.min_score = Number(applied.min_score)
+    if (applied.max_score !== '') params.max_score = Number(applied.max_score)
+    if (applied.mood) params.mood = applied.mood
+    if (applied.style) params.style = applied.style
+    if (applied.metadata_filter === 'missing') params.missing_metadata = true
+    if (applied.metadata_filter === 'has') params.has_metadata = true
+    if (applied.screenshot_filter === 'missing') params.missing_screenshot = true
+    if (applied.screenshot_filter === 'has') params.has_screenshot = true
+    if (applied.screenshot_filter === 'multiple') params.has_multiple_screenshots = true
+
+    fetchCompanies(params)
+      .then((data) => {
+        if (!cancelled) {
+          setCompanies(data.companies)
+          setTotal(data.total)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load companies')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()])
+
+  // Keep draft in sync when navigating back (searchParams change externally)
+  const prevParamsRef = useRef(searchParams.toString())
+  useEffect(() => {
+    const cur = searchParams.toString()
+    if (cur !== prevParamsRef.current) {
+      prevParamsRef.current = cur
+      setDraft(filtersFromParams(searchParams))
+      setSearchInput(searchParams.get('search') || '')
+    }
+  }, [searchParams])
 
   const totalPages = Math.max(1, Math.ceil(total / LIMIT))
 
-  function handleSort(newSort: SortField) {
-    setSort(newSort)
-    setPage(1)
-  }
-
-  function handleDirToggle() {
-    setDir((d) => (d === 'desc' ? 'asc' : 'desc'))
-    setPage(1)
-  }
-
-  function handlePage(p: number) {
-    setPage(p)
+  function setPage(p: number) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (p === 1) next.delete('page')
+      else next.set('page', String(p))
+      return next
+    }, { replace: true })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  function handleSort(newSort: SortField) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('sort', newSort)
+      next.delete('page')
+      return next
+    }, { replace: true })
+  }
+
+  function handleDirToggle() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('dir', dir === 'desc' ? 'asc' : 'desc')
+      next.delete('page')
+      return next
+    }, { replace: true })
+  }
+
   function handleApply() {
-    setApplied({ ...draft })
-    setPage(1)
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      const set = (k: string, v: string) => v ? next.set(k, v) : next.delete(k)
+      set('industry', draft.industry)
+      set('company_size', draft.company_size)
+      set('min_score', draft.min_score)
+      set('max_score', draft.max_score)
+      set('mood', draft.mood)
+      set('style', draft.style)
+      set('metadata_filter', draft.metadata_filter)
+      set('screenshot_filter', draft.screenshot_filter)
+      next.delete('page')
+      return next
+    }, { replace: true })
   }
 
   function handleReset() {
     setDraft(EMPTY_FILTERS)
-    setApplied(EMPTY_FILTERS)
-    setPage(1)
+    setSearchInput('')
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    setSearchParams(new URLSearchParams(), { replace: true })
   }
 
-  function updateDraft(field: keyof Filters, value: string | boolean) {
+  function updateDraft(field: keyof Filters, value: string) {
     setDraft((prev) => ({ ...prev, [field]: value }))
   }
+
+  const isTyping = searchInput !== search
 
   // Build visible page numbers (show up to 7 around current)
   const pageNumbers: number[] = []
@@ -176,9 +256,9 @@ export default function Gallery() {
     const start = Math.max(1, page - 3)
     const end = Math.min(totalPages, page + 3)
     if (start > 1) pageNumbers.push(1)
-    if (start > 2) pageNumbers.push(-1) // ellipsis
+    if (start > 2) pageNumbers.push(-1)
     for (let i = start; i <= end; i++) pageNumbers.push(i)
-    if (end < totalPages - 1) pageNumbers.push(-2) // ellipsis
+    if (end < totalPages - 1) pageNumbers.push(-2)
     if (end < totalPages) pageNumbers.push(totalPages)
   }
 
@@ -188,17 +268,17 @@ export default function Gallery() {
       <div className="relative">
         <input
           type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={searchInput}
+          onChange={(e) => handleSearchChange(e.target.value)}
           placeholder="Search companies…"
           className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-xl px-4 py-2.5 pl-10 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
         />
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
           {isTyping || loading ? '⟳' : '🔍'}
         </span>
-        {search && (
+        {searchInput && (
           <button
-            onClick={() => setSearch('')}
+            onClick={clearSearch}
             className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-lg leading-none"
           >
             ×
@@ -350,6 +430,7 @@ export default function Gallery() {
             >
               <option value="">All</option>
               <option value="has">Has screenshot</option>
+              <option value="multiple">Multiple screenshots</option>
               <option value="missing">Missing screenshot</option>
             </select>
           </div>
@@ -400,7 +481,7 @@ export default function Gallery() {
       {!loading && totalPages > 1 && (
         <div className="flex items-center justify-center gap-2 pt-2">
           <button
-            onClick={() => handlePage(page - 1)}
+            onClick={() => setPage(page - 1)}
             disabled={page === 1}
             className="px-3 py-1.5 rounded text-sm bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
@@ -413,12 +494,12 @@ export default function Gallery() {
                 …
               </span>
             ) : (
-              <PageButton key={p} page={p} current={page} onClick={handlePage} />
+              <PageButton key={p} page={p} current={page} onClick={setPage} />
             ),
           )}
 
           <button
-            onClick={() => handlePage(page + 1)}
+            onClick={() => setPage(page + 1)}
             disabled={page === totalPages}
             className="px-3 py-1.5 rounded text-sm bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >

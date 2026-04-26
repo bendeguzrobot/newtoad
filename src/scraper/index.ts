@@ -166,6 +166,14 @@ async function fromFolderMode(force: boolean): Promise<void> {
     const finalColors = pixelColors ?? analysis.main_colors;
 
     // Save full result
+    let folderScreenshotCount = 1;
+    if (fs.existsSync(crawlResult.galleryPath)) {
+      try {
+        const g = JSON.parse(fs.readFileSync(crawlResult.galleryPath, 'utf-8')) as { screenshots: unknown[] };
+        folderScreenshotCount = g.screenshots.length;
+      } catch { /* ignore */ }
+    }
+
     upsertCompany({
       id: company.id,
       name: company.name,
@@ -173,6 +181,7 @@ async function fromFolderMode(force: boolean): Promise<void> {
       url: meta.url,
       scraped_at: new Date().toISOString(),
       screenshot_path: relScreenshot,
+      screenshot_count: folderScreenshotCount,
       industry: analysis.industry,
       what_they_sell: analysis.what_they_sell,
       company_size: analysis.company_size,
@@ -292,10 +301,19 @@ async function csvMode(csvPath: string, force: boolean, inlineRows?: CsvRow[]): 
     // Prefer pixel-extracted colors over LLM guess
     const finalColors = pixelColors ?? analysis.main_colors;
 
+    let screenshotCount = 1;
+    if (fs.existsSync(crawlResult.galleryPath)) {
+      try {
+        const g = JSON.parse(fs.readFileSync(crawlResult.galleryPath, 'utf-8')) as { screenshots: unknown[] };
+        screenshotCount = g.screenshots.length;
+      } catch { /* ignore */ }
+    }
+
     upsertCompany({
       id: company.id, name, domain, url,
       scraped_at: new Date().toISOString(),
       screenshot_path: relScreenshot,
+      screenshot_count: screenshotCount,
       industry: analysis.industry,
       what_they_sell: analysis.what_they_sell,
       company_size: analysis.company_size,

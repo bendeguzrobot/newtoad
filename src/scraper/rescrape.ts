@@ -65,6 +65,7 @@ export async function rescrapeCompany(id: number): Promise<Company> {
     url,
     scraped_at: new Date().toISOString(),
     screenshot_path: relScreenshot,
+    screenshot_count: gallery.screenshots.length,
     industry: analysis.industry,
     what_they_sell: analysis.what_they_sell,
     company_size: analysis.company_size,
