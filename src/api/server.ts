@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import path from 'path';
 import { getCompanies, getCompany, getGenerations } from '../db.js';
 
 const app = express();
@@ -9,6 +10,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 // Middleware
 app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:3000'] }));
 app.use(express.json());
+app.use('/data', express.static(path.join(process.cwd(), 'data')));
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 

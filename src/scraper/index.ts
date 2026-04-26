@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { parse as csvParse } from 'csv-parse/sync';
 import fs from 'fs';
 import path from 'path';
@@ -128,8 +129,23 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Step 3: Analyze with Claude
-    console.log(`  Analyzing with Claude...`);
+    // Step 3: Save crawl result to DB immediately (screenshot visible even if analysis fails)
+    const dataDir = path.join(process.cwd(), 'data');
+    const relativeScreenshotPath = path.relative(dataDir, crawlResult.screenshotPath);
+    try {
+      upsertCompany({
+        id: company.id,
+        name: companyName,
+        domain,
+        url,
+        screenshot_path: relativeScreenshotPath,
+      });
+    } catch (err: unknown) {
+      console.error(`  DB crawl-save failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Step 4: Analyze with Gemini
+    console.log(`  Analyzing with Gemini...`);
     let analysis;
     try {
       analysis = await analyzeWebsite(crawlResult);
@@ -140,7 +156,7 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Step 4: Save to DB
+    // Step 5: Save full analysis to DB
     try {
       const updated = upsertCompany({
         id: company.id,
@@ -151,7 +167,7 @@ async function main(): Promise<void> {
         industry: analysis.industry,
         what_they_sell: analysis.what_they_sell,
         company_size: analysis.company_size,
-        screenshot_path: crawlResult.screenshotPath,
+        screenshot_path: relativeScreenshotPath,
         design_quality_score: analysis.design_quality_score,
         design_last_modified_year: analysis.design_last_modified_year,
         seo_score: analysis.seo_score,
