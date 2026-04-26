@@ -2,6 +2,36 @@
 
 Scrape Korean SME websites, analyze them with LLMs, and generate redesigned landing pages.
 
+## Flow
+
+```mermaid
+flowchart TD
+    CSV["📄 CSV\ncompany names / URLs"]
+    SEARCH["🔍 Web Search\nfind company site"]
+    CRAWL["🕷️ Playwright Crawler\nload page"]
+    SNAP["📸 Snapshot\nscreenshot desktop + mobile\nsave assets"]
+    ANALYZE["🤖 LLM Analysis\ndesign score · SEO score\ncolors · mood · industry"]
+    DB[("🗄️ SQLite DB")]
+    GALLERY["🖼️ Gallery UI\nbrowse · sort · filter"]
+    DETAIL["📋 Detail Page\noriginal screenshot\ncolor palette · metadata"]
+    GEN["✨ Generate New Site\nClaude writes modern HTML/CSS\nbased on company metadata"]
+    GENSNAP["📸 Generated Snapshot\ndesktop + mobile"]
+    COMPARE["⚖️ Compare View\noriginal vs generated"]
+
+    CSV --> SEARCH
+    SEARCH --> CRAWL
+    CSV -- "url column present" --> CRAWL
+    CRAWL --> SNAP
+    SNAP --> ANALYZE
+    ANALYZE --> DB
+    DB --> GALLERY
+    GALLERY --> DETAIL
+    DETAIL --> GEN
+    GEN --> GENSNAP
+    GENSNAP --> COMPARE
+    COMPARE --> DETAIL
+```
+
 ## What it does
 
 1. **Ingest** — takes a CSV of company names (and optional URLs)
