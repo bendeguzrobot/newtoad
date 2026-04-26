@@ -11,6 +11,27 @@ import type { GalleryManifest } from '../types.js';
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
+// ─── Trusted-IP guard (LLM routes only) ───────────────────────────────────────
+
+function isTrustedIp(ip: string): boolean {
+  const addr = ip.replace(/^::ffff:/, '').trim();
+  return (
+    addr === '127.0.0.1' ||
+    addr === '::1' ||
+    addr.startsWith('10.') ||
+    addr.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(addr) ||
+    addr.startsWith('100.')  // Tailscale CGNAT range (100.64.0.0/10)
+  );
+}
+
+function requireTrustedIp(req: Request, res: Response, next: NextFunction) {
+  const ip = (req.headers['x-real-ip'] as string) || req.socket.remoteAddress || '';
+  if (isTrustedIp(ip)) return next();
+  console.warn(`[guard] Blocked ${req.method} ${req.path} from ${ip}`);
+  res.status(403).json({ error: 'Forbidden: trusted network only' });
+}
+
 // Middleware
 app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:3000'] }));
 app.use(express.json());
@@ -147,7 +168,7 @@ app.get('/api/companies/:id/gallery', (req: Request, res: Response, next: NextFu
 /**
  * POST /api/companies/:id/rescrape
  */
-app.post('/api/companies/:id/rescrape', async (req: Request, res: Response, next: NextFunction) => {
+app.post('/api/companies/:id/rescrape', requireTrustedIp, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -179,7 +200,7 @@ app.post('/api/companies/:id/rescrape', async (req: Request, res: Response, next
  * POST /api/companies/:id/generate
  * Body: { extra_prompt?: string; color_board?: string[] }
  */
-app.post('/api/companies/:id/generate', async (req: Request, res: Response, next: NextFunction) => {
+app.post('/api/companies/:id/generate', requireTrustedIp, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
