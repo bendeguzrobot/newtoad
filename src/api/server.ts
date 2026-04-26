@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { getCompanies, getCompany, getGenerations } from '../db.js';
@@ -43,15 +44,7 @@ app.get('/api/companies', (req: Request, res: Response, next: NextFunction) => {
 
     const { companies, total } = getCompanies({ page, limit, sort, dir });
 
-    res.json({
-      data: companies,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    });
+    res.json({ companies, total, page, limit });
   } catch (err) {
     next(err);
   }
