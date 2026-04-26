@@ -108,8 +108,15 @@ app.post('/api/companies/:id/generate', async (req: Request, res: Response, next
 
     const { extra_prompt, color_board } = req.body as { extra_prompt?: string; color_board?: string[] };
 
-    const generation = await generateWebsite(company, { extra_prompt, color_board });
-    res.json(generation);
+    const gen = await generateWebsite(company, { extra_prompt, color_board });
+    // Worker returns absolute paths for CLI; normalize to data-relative for API
+    const dataDir = path.join(process.cwd(), 'data');
+    res.json({
+      ...gen,
+      html_path: gen.html_path ? path.relative(dataDir, gen.html_path) : null,
+      screenshot_path: gen.screenshot_path ? path.relative(dataDir, gen.screenshot_path) : null,
+      mobile_screenshot_path: gen.mobile_screenshot_path ? path.relative(dataDir, gen.mobile_screenshot_path) : null,
+    });
   } catch (err) {
     next(err);
   }

@@ -198,9 +198,6 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
       continue;
     }
 
-    let company = existing ?? upsertCompany({ name });
-    if (!existing) console.log(`  Created DB entry (id=${company.id})`);
-
     // Use URL from CSV if provided, otherwise search
     let url: string | null = rows[i].url?.trim() || null;
     if (url) {
@@ -218,6 +215,10 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
         continue;
       }
     }
+
+    // Only create/load DB entry once we have a URL
+    let company = existing ?? upsertCompany({ name });
+    if (!existing) console.log(`  Created DB entry (id=${company.id})`);
 
     const domain = extractDomain(url);
 

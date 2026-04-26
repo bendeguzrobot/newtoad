@@ -16,6 +16,14 @@ export interface GenerateOptions {
 /**
  * Build the Gemini prompt for website generation from company metadata.
  */
+function getAssetUrls(domain: string): string[] {
+  const assetsDir = path.join(DATA_DIR, domain, 'assets');
+  if (!fs.existsSync(assetsDir)) return [];
+  return fs.readdirSync(assetsDir)
+    .filter(f => /\.(png|jpe?g|gif|webp|svg)$/i.test(f))
+    .map(f => `/data/websites/${domain}/assets/${f}`);
+}
+
 function buildPrompt(company: Company, opts: GenerateOptions): string {
   let mainColors: string[] = [];
   if (opts.color_board && opts.color_board.length > 0) {
@@ -24,14 +32,17 @@ function buildPrompt(company: Company, opts: GenerateOptions): string {
     try {
       const parsed = JSON.parse(company.main_colors);
       if (Array.isArray(parsed)) mainColors = parsed as string[];
-    } catch {
-      // ignore parse errors
-    }
+    } catch { /* ignore */ }
   }
 
   const colorsStr = mainColors.length > 0 ? mainColors.join(', ') : '#0055a5, #ffffff, #333333';
+  const domain = company.domain ?? '';
+  const assets = getAssetUrls(domain);
+  const assetsBlock = assets.length > 0
+    ? `\nAvailable images from the real website (use these in <img src="..."> tags):\n${assets.map(u => `  ${u}`).join('\n')}`
+    : '';
 
-  let prompt = `You are an expert web designer. Create a complete, beautiful, modern, responsive single-page HTML website for this Korean company.
+  let prompt = `Create a complete, beautiful, modern, responsive single-page HTML website for this Korean company.
 
 Company name: ${company.name}
 Industry: ${company.industry ?? 'unknown'}
@@ -40,23 +51,21 @@ Company size: ${company.company_size ?? 'unknown'}
 Brand colors (use these): ${colorsStr}
 Mood/feel: ${company.mood ?? 'professional'}
 Design style: ${company.style ?? 'modern'}
-Key marketing copy: ${company.copy ?? ''}`;
+Key marketing copy: ${company.copy ?? ''}${assetsBlock}`;
 
-  if (opts.extra_prompt) {
-    prompt += `\n\n${opts.extra_prompt}`;
-  }
+  if (opts.extra_prompt) prompt += `\n\nExtra instructions: ${opts.extra_prompt}`;
 
   prompt += `
 
 Requirements:
 - Single HTML file, ALL CSS embedded in <style> tag
-- Mobile responsive (use CSS flexbox/grid, media queries)
-- Sections: hero with tagline, about/intro, products or services, contact CTA
+- Mobile responsive (CSS flexbox/grid + media queries)
+- Sections: hero with tagline, about/intro, products/services, contact CTA
 - Use the brand colors as primary palette
-- Modern, clean typography (use Google Fonts CDN link is OK)
-- Compelling Korean-market B2B/B2C design
-- NO JavaScript frameworks, NO external CSS frameworks
-- Output ONLY the raw HTML starting with <!DOCTYPE html> — no explanation, no markdown`;
+- Modern typography (Google Fonts CDN OK)
+- If images provided above, use them — pick the most relevant ones for hero/sections
+- NO JS frameworks, NO external CSS frameworks
+- Output ONLY raw HTML starting with <!DOCTYPE html>`;
 
   return prompt;
 }
