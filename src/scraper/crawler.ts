@@ -90,7 +90,8 @@ export async function crawlWebsite(url: string, domain: string): Promise<CrawlRe
 
     const page = await context.newPage();
 
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(2000);
 
     // Full-page screenshot
     await page.screenshot({ path: screenshotPath, fullPage: true });
@@ -147,7 +148,8 @@ export async function crawlWebsite(url: string, domain: string): Promise<CrawlRe
     });
 
     const mobilePage = await mobileContext.newPage();
-    await mobilePage.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    await mobilePage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await mobilePage.waitForTimeout(1500);
     await mobilePage.screenshot({ path: mobileScreenshotPath, fullPage: true });
     await mobileContext.close();
 
