@@ -6,8 +6,8 @@ install:
   npx playwright install chromium
   cd web && npm install
 
-scrape input="companies.csv":
-  npx tsx src/scraper/index.ts {{input}}
+scrape *args:
+  npx tsx src/scraper/index.ts {{args}}
 
 api:
   npx tsx src/api/server.ts

@@ -13,199 +13,269 @@ import { searchWeb } from './search.js';
 import { crawlWebsite } from './crawler.js';
 import { analyzeWebsite } from './analyzer.js';
 import { getDb, upsertCompany } from '../db.js';
-import type { Company } from '../types.js';
+import type { Company, CrawlResult } from '../types.js';
 
-interface CsvRow {
-  name: string;
-  notes?: string;
-}
+interface CsvRow { name: string; notes?: string; }
 
-/**
- * Extract the domain from a URL string.
- */
+const DATA_DIR = path.join(process.cwd(), 'data');
+const WEBSITES_DIR = path.join(DATA_DIR, 'websites');
+
+const SUSPICIOUS = ['google.com', 'naver.com', 'wikipedia.org', 'duckduckgo.com', 'youtube.com'];
+
 function extractDomain(urlStr: string): string {
-  try {
-    const parsed = new URL(urlStr);
-    return parsed.hostname.replace(/^www\./, '');
-  } catch {
-    return urlStr;
-  }
+  try { return new URL(urlStr).hostname.replace(/^www\./, ''); }
+  catch { return urlStr; }
 }
 
-/**
- * Sleep for ms milliseconds.
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 5000);
 }
 
-/**
- * Main orchestrator: reads CSV, searches for each company's homepage,
- * crawls it, analyzes it via Gemini, and saves results to DB + disk.
- */
-async function main(): Promise<void> {
-  const csvPath = process.argv[2] || path.join(process.cwd(), 'companies.csv');
+// ── from-folder mode ──────────────────────────────────────────────────────────
 
-  console.log(`\n=== NewToad Web Scraper ===`);
-  console.log(`CSV: ${csvPath}\n`);
+async function fromFolderMode(force: boolean): Promise<void> {
+  console.log('\n=== NewToad Scraper — from-folder mode ===');
+  console.log(`Scanning ${WEBSITES_DIR}...\n`);
 
-  if (!fs.existsSync(csvPath)) {
-    console.error(`ERROR: CSV file not found: ${csvPath}`);
+  if (!fs.existsSync(WEBSITES_DIR)) {
+    console.error('No data/websites/ directory found. Run scraper first.');
     process.exit(1);
   }
 
-  const csvContent = fs.readFileSync(csvPath, 'utf-8');
-  const rows: CsvRow[] = csvParse(csvContent, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: true,
-    bom: true,
-  });
+  const db = getDb();
+  const folders = fs.readdirSync(WEBSITES_DIR).filter(f =>
+    fs.statSync(path.join(WEBSITES_DIR, f)).isDirectory()
+  );
 
-  if (rows.length === 0) {
-    console.log('No companies found in CSV.');
-    return;
-  }
+  console.log(`Found ${folders.length} folders.\n`);
 
-  console.log(`Found ${rows.length} companies to process.\n`);
+  for (const folder of folders) {
+    const siteDir = path.join(WEBSITES_DIR, folder);
+    const metaPath = path.join(siteDir, 'metadata.json');
+    const htmlPath = path.join(siteDir, 'index.html');
+    const screenshotPath = path.join(siteDir, 'screenshot.png');
 
-  // Ensure DB is initialized
-  getDb();
+    console.log(`\n[folder] ${folder}`);
 
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const companyName = row.name?.trim();
-
-    if (!companyName) {
-      console.log(`[${i + 1}/${rows.length}] Skipping empty row`);
+    if (!fs.existsSync(metaPath)) {
+      console.log('  No metadata.json, skipping.');
       continue;
     }
 
-    console.log(`\n[${i + 1}/${rows.length}] Processing: ${companyName}`);
-    if (row.notes) {
-      console.log(`  Notes: ${row.notes}`);
+    // Read saved metadata
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as {
+      url: string; domain: string; title?: string; metaDescription?: string;
+      h1Texts?: string[]; h2Texts?: string[]; imageSrcs?: string[];
+    };
+
+    const domain = meta.domain || folder;
+
+    // Find or create company in DB (match by domain or url)
+    let company = db.prepare('SELECT * FROM companies WHERE domain = ?').get(domain) as Company | undefined;
+    if (!company) {
+      // Try matching by url
+      company = db.prepare('SELECT * FROM companies WHERE url = ?').get(meta.url) as Company | undefined;
     }
 
-    // Check if already scraped
-    const db = getDb();
-    const existing = db.prepare('SELECT * FROM companies WHERE name = ?').get(companyName) as Company | undefined;
-
-    if (existing?.scraped_at) {
-      console.log(`  ✓ Already scraped (${existing.scraped_at}), skipping.`);
+    if (company?.scraped_at && !force) {
+      console.log(`  ✓ Already fully scraped (${company.scraped_at}), skipping. Use --force to redo.`);
       continue;
     }
 
-    // Ensure company exists in DB (even if not yet scraped)
-    let company: Company;
-    if (!existing) {
-      company = upsertCompany({ name: companyName });
-      console.log(`  Created DB entry (id=${company.id})`);
+    if (!company) {
+      // Create a new DB entry from folder data (unknown company name → use title or domain)
+      const name = meta.title || domain;
+      company = upsertCompany({ name, domain, url: meta.url });
+      console.log(`  Created DB entry: "${company.name}" (id=${company.id})`);
     } else {
-      company = existing;
+      console.log(`  Matched DB entry: "${company.name}" (id=${company.id})`);
     }
 
-    // Step 1: Search for homepage URL
-    let url: string | null = null;
-    try {
-      console.log(`  Searching for "${companyName}" homepage...`);
-      url = await searchWeb(companyName);
-      if (url) {
-        const foundUrl = url;
-        console.log(`  Found URL: ${foundUrl}`);
-        const suspiciousDomains = ['google.com', 'naver.com', 'wikipedia.org', 'duckduckgo.com', 'youtube.com'];
-        if (suspiciousDomains.some(d => foundUrl.includes(d))) {
-          console.warn(`  ⚠️  Warning: found URL looks like a search engine, not company site: ${foundUrl}`);
-        }
-      } else {
-        console.log(`  No URL found via search. Skipping.`);
-        continue;
-      }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`  Search failed: ${message}`);
-      continue;
+    // Save screenshot path immediately
+    const relScreenshot = path.relative(DATA_DIR, screenshotPath);
+    if (fs.existsSync(screenshotPath)) {
+      upsertCompany({ id: company.id, name: company.name, domain, url: meta.url, screenshot_path: relScreenshot });
     }
 
-    // Step 2: Crawl the website
-    const domain = extractDomain(url);
-    console.log(`  Crawling ${url} (domain: ${domain})...`);
+    // Build CrawlResult from saved files
+    const html = fs.existsSync(htmlPath) ? fs.readFileSync(htmlPath, 'utf-8') : '';
+    const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+    const htmlHead = headMatch ? headMatch[1].slice(0, 3000) : '';
+    const visibleText = html ? stripHtml(html) : '';
 
-    let crawlResult;
-    try {
-      crawlResult = await crawlWebsite(url, domain);
-      console.log(`  Crawled successfully. Title: "${crawlResult.title}"`);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`  Crawl failed: ${message}`);
-      continue;
-    }
+    const crawlResult: CrawlResult = {
+      url: meta.url,
+      domain,
+      title: meta.title ?? '',
+      metaDescription: meta.metaDescription ?? '',
+      h1Texts: meta.h1Texts ?? [],
+      h2Texts: meta.h2Texts ?? [],
+      visibleText,
+      imageSrcs: meta.imageSrcs ?? [],
+      htmlHead,
+      screenshotPath,
+      mobileScreenshotPath: path.join(siteDir, 'screenshot-mobile.png'),
+      htmlPath,
+      metadataPath: metaPath,
+    };
 
-    // Step 3: Save crawl result to DB immediately (screenshot visible even if analysis fails)
-    const dataDir = path.join(process.cwd(), 'data');
-    const relativeScreenshotPath = path.relative(dataDir, crawlResult.screenshotPath);
-    try {
-      upsertCompany({
-        id: company.id,
-        name: companyName,
-        domain,
-        url,
-        screenshot_path: relativeScreenshotPath,
-      });
-    } catch (err: unknown) {
-      console.error(`  DB crawl-save failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // Step 4: Analyze with Gemini
-    console.log(`  Analyzing with Gemini...`);
+    // Analyze with Gemini
+    console.log('  Analyzing with Gemini...');
     let analysis;
     try {
       analysis = await analyzeWebsite(crawlResult);
-      console.log(`  Analysis complete: ${analysis.industry} | score=${analysis.design_quality_score}`);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`  Analysis failed: ${message}`);
+      console.log(`  ✓ ${analysis.industry} | SEO=${analysis.seo_score} | Design=${analysis.design_quality_score}`);
+    } catch (err) {
+      console.error(`  Analysis failed: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
 
-    // Step 5: Save full analysis to DB
-    try {
-      const updated = upsertCompany({
-        id: company.id,
-        name: companyName,
-        domain,
-        url,
-        scraped_at: new Date().toISOString(),
-        industry: analysis.industry,
-        what_they_sell: analysis.what_they_sell,
-        company_size: analysis.company_size,
-        screenshot_path: relativeScreenshotPath,
-        design_quality_score: analysis.design_quality_score,
-        design_last_modified_year: analysis.design_last_modified_year,
-        seo_score: analysis.seo_score,
-        main_colors: JSON.stringify(analysis.main_colors),
-        mood: analysis.mood,
-        style: analysis.style,
-        copy: analysis.copy,
-      });
-      console.log(`  Saved to DB (id=${updated.id}).`);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`  DB save failed: ${message}`);
-      continue;
-    }
+    // Save full result
+    upsertCompany({
+      id: company.id,
+      name: company.name,
+      domain,
+      url: meta.url,
+      scraped_at: new Date().toISOString(),
+      screenshot_path: relScreenshot,
+      industry: analysis.industry,
+      what_they_sell: analysis.what_they_sell,
+      company_size: analysis.company_size,
+      design_quality_score: analysis.design_quality_score,
+      design_last_modified_year: analysis.design_last_modified_year,
+      seo_score: analysis.seo_score,
+      main_colors: JSON.stringify(analysis.main_colors),
+      mood: analysis.mood,
+      style: analysis.style,
+      copy: analysis.copy,
+    });
+    console.log('  Saved.');
 
-    console.log(`  Done.`);
-
-    // Polite delay between requests to avoid rate limiting
-    if (i < rows.length - 1) {
-      await sleep(2000);
-    }
+    await sleep(500);
   }
 
-  console.log(`\n=== Scraping complete ===\n`);
+  console.log('\n=== from-folder complete ===\n');
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+// ── CSV scrape mode ───────────────────────────────────────────────────────────
+
+async function csvMode(csvPath: string, force: boolean): Promise<void> {
+  console.log('\n=== NewToad Web Scraper ===');
+  console.log(`CSV: ${csvPath}  force=${force}\n`);
+
+  if (!fs.existsSync(csvPath)) {
+    console.error(`CSV not found: ${csvPath}`);
+    process.exit(1);
+  }
+
+  const rows: CsvRow[] = csvParse(fs.readFileSync(csvPath, 'utf-8'), {
+    columns: true, skip_empty_lines: true, trim: true, bom: true,
+  });
+
+  if (rows.length === 0) { console.log('No companies in CSV.'); return; }
+  console.log(`Found ${rows.length} companies.\n`);
+
+  const db = getDb();
+
+  for (let i = 0; i < rows.length; i++) {
+    const name = rows[i].name?.trim();
+    if (!name) continue;
+
+    console.log(`\n[${i + 1}/${rows.length}] ${name}`);
+
+    const existing = db.prepare('SELECT * FROM companies WHERE name = ?').get(name) as Company | undefined;
+
+    if (existing?.scraped_at && !force) {
+      console.log(`  ✓ Already scraped, skipping. Use --force to redo.`);
+      continue;
+    }
+
+    let company = existing ?? upsertCompany({ name });
+    if (!existing) console.log(`  Created DB entry (id=${company.id})`);
+
+    // Search
+    let url: string | null = null;
+    try {
+      console.log(`  Searching...`);
+      url = await searchWeb(name);
+      if (!url) { console.log('  No URL found, skipping.'); continue; }
+      console.log(`  Found: ${url}`);
+      if (SUSPICIOUS.some(d => url!.includes(d)))
+        console.warn(`  ⚠️  Looks like a search engine result, not company site!`);
+    } catch (err) {
+      console.error(`  Search failed: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    const domain = extractDomain(url);
+
+    // Crawl
+    console.log(`  Crawling ${domain}...`);
+    let crawlResult: CrawlResult;
+    try {
+      crawlResult = await crawlWebsite(url, domain);
+      console.log(`  Crawled: "${crawlResult.title}"`);
+    } catch (err) {
+      console.error(`  Crawl failed: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    // Save screenshot immediately
+    const relScreenshot = path.relative(DATA_DIR, crawlResult.screenshotPath);
+    upsertCompany({ id: company.id, name, domain, url, screenshot_path: relScreenshot });
+
+    // Analyze
+    console.log('  Analyzing with Gemini...');
+    let analysis;
+    try {
+      analysis = await analyzeWebsite(crawlResult);
+      console.log(`  ✓ ${analysis.industry} | SEO=${analysis.seo_score} | Design=${analysis.design_quality_score}`);
+    } catch (err) {
+      console.error(`  Analysis failed: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    upsertCompany({
+      id: company.id, name, domain, url,
+      scraped_at: new Date().toISOString(),
+      screenshot_path: relScreenshot,
+      industry: analysis.industry,
+      what_they_sell: analysis.what_they_sell,
+      company_size: analysis.company_size,
+      design_quality_score: analysis.design_quality_score,
+      design_last_modified_year: analysis.design_last_modified_year,
+      seo_score: analysis.seo_score,
+      main_colors: JSON.stringify(analysis.main_colors),
+      mood: analysis.mood,
+      style: analysis.style,
+      copy: analysis.copy,
+    });
+    console.log('  Done.');
+
+    if (i < rows.length - 1) await sleep(2000);
+  }
+
+  console.log('\n=== Scraping complete ===\n');
+}
+
+// ── entry point ───────────────────────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+const fromFolder = args.includes('--from-folder');
+const csvArg = args.find(a => !a.startsWith('--'));
+
+if (fromFolder) {
+  fromFolderMode(force).catch(err => { console.error(err); process.exit(1); });
+} else {
+  const csvPath = csvArg ?? path.join(process.cwd(), 'companies.csv');
+  csvMode(csvPath, force).catch(err => { console.error(err); process.exit(1); });
+}
