@@ -1,9 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI } from '@google/genai';
 import type { CrawlResult, AnalysisResult } from '../types.js';
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const SYSTEM_PROMPT = `You are an expert web analyst specializing in Korean business websites.
 Your job is to analyze website content and extract structured information about the company and its web presence.
@@ -35,10 +33,6 @@ For main_colors: extract 3 dominant colors from CSS or meta og:image context if 
 For design_last_modified_year: estimate based on design patterns, CSS frameworks mentioned, and content references
 For company_size: small (<50 employees or local business), medium (50-500 employees), large (>500 employees or national/global brand)`;
 
-/**
- * Analyze a crawled website using Claude to extract structured business and design information.
- * Uses prompt caching on the system prompt to reduce costs for repeated analyses.
- */
 export async function analyzeWebsite(crawlResult: CrawlResult): Promise<AnalysisResult> {
   const { title, metaDescription, visibleText, htmlHead } = crawlResult;
 
@@ -58,31 +52,13 @@ ${visibleText || '(no visible text extracted)'}
 
 Respond with ONLY the JSON object as described in your instructions.`;
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    system: [
-      {
-        type: 'text',
-        text: SYSTEM_PROMPT,
-        cache_control: { type: 'ephemeral' },
-      },
-    ],
-    messages: [
-      {
-        role: 'user',
-        content: userContent,
-      },
-    ],
+  const response = await client.models.generateContent({
+    model: 'gemini-2.5-flash',
+    config: { systemInstruction: SYSTEM_PROMPT },
+    contents: userContent,
   });
 
-  // Extract text from response
-  const textBlock = response.content.find(b => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('No text response from Claude');
-  }
-
-  let rawText = textBlock.text.trim();
+  let rawText = (response.text ?? '').trim();
 
   // Strip markdown code fences if present
   if (rawText.startsWith('```')) {
@@ -93,10 +69,9 @@ Respond with ONLY the JSON object as described in your instructions.`;
   try {
     parsed = JSON.parse(rawText);
   } catch {
-    throw new Error(`Failed to parse Claude response as JSON: ${rawText.slice(0, 200)}`);
+    throw new Error(`Failed to parse Gemini response as JSON: ${rawText.slice(0, 200)}`);
   }
 
-  // Validate and normalize the parsed result
   const obj = parsed as Record<string, unknown>;
 
   const result: AnalysisResult = {

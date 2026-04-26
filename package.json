@@ -1,12 +1,13 @@
 {
   "name": "newtoad",
   "version": "0.1.0",
+  "type": "module",
   "scripts": {
-    "scrape": "ts-node src/scraper/index.ts",
-    "api": "ts-node src/api/server.ts"
+    "scrape": "tsx src/scraper/index.ts",
+    "api": "tsx src/api/server.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@google/genai": "^1.50.1",
     "axios": "^1.7.0",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
@@ -22,6 +23,7 @@
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.4.0"
   }
 }
