@@ -27,10 +27,14 @@ export interface CompaniesResponse {
 }
 
 export interface SiteGeneration {
-  id: number;
-  companyId: number;
+  id: string; // uuid
+  company_id: number;
+  color_board: string | null;
+  extra_prompt: string | null;
+  generation_time_ms: number | null;
+  screenshot_path: string | null;
+  html_path: string | null;
   created_at: string;
-  [key: string]: unknown;
 }
 
 export type SortField = 'seo_score' | 'design_quality_score' | 'design_last_modified_year' | 'name';

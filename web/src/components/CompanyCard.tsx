@@ -88,6 +88,19 @@ export default function CompanyCard({ company }: Props) {
           <ScoreBar label="Design" score={company.design_quality_score} />
         </div>
 
+        {company.main_colors && (() => {
+          try {
+            const colors: string[] = JSON.parse(company.main_colors)
+            return (
+              <div className="flex gap-1 mt-1">
+                {colors.slice(0, 5).map(c => (
+                  <span key={c} className="w-4 h-4 rounded-sm border border-gray-600 shrink-0" style={{ backgroundColor: c }} title={c} />
+                ))}
+              </div>
+            )
+          } catch { return null }
+        })()}
+
         {company.design_last_modified_year !== null && (
           <p className="text-xs text-gray-500">
             Last updated: <span className="text-gray-400">{company.design_last_modified_year}</span>

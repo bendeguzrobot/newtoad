@@ -1,4 +1,10 @@
 import 'dotenv/config';
+
+if (!process.env.GEMINI_API_KEY) {
+  console.error('\nERROR: GEMINI_API_KEY is not set. Add it to .env or export it.\n');
+  process.exit(1);
+}
+
 import { parse as csvParse } from 'csv-parse/sync';
 import fs from 'fs';
 import path from 'path';
@@ -35,7 +41,7 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Main orchestrator: reads CSV, searches for each company's homepage,
- * crawls it, analyzes it via Claude, and saves results to DB + disk.
+ * crawls it, analyzes it via Gemini, and saves results to DB + disk.
  */
 async function main(): Promise<void> {
   const csvPath = process.argv[2] || path.join(process.cwd(), 'companies.csv');
@@ -104,7 +110,12 @@ async function main(): Promise<void> {
       console.log(`  Searching for "${companyName}" homepage...`);
       url = await searchWeb(companyName);
       if (url) {
-        console.log(`  Found URL: ${url}`);
+        const foundUrl = url;
+        console.log(`  Found URL: ${foundUrl}`);
+        const suspiciousDomains = ['google.com', 'naver.com', 'wikipedia.org', 'duckduckgo.com', 'youtube.com'];
+        if (suspiciousDomains.some(d => foundUrl.includes(d))) {
+          console.warn(`  ⚠️  Warning: found URL looks like a search engine, not company site: ${foundUrl}`);
+        }
       } else {
         console.log(`  No URL found via search. Skipping.`);
         continue;

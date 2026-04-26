@@ -10,6 +10,18 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`API error ${res.status}: ${res.statusText}`);
+  }
+  return res.json() as Promise<T>;
+}
+
 export interface FetchCompaniesParams {
   page?: number;
   limit?: number;
@@ -34,4 +46,11 @@ export function fetchCompany(id: number | string): Promise<Company> {
 
 export function fetchGenerations(companyId: number | string): Promise<SiteGeneration[]> {
   return get<SiteGeneration[]>(`/generations?companyId=${companyId}`);
+}
+
+export function triggerGenerate(
+  companyId: number | string,
+  opts: { extra_prompt?: string; color_board?: string[] },
+): Promise<SiteGeneration> {
+  return post<SiteGeneration>(`/companies/${companyId}/generate`, opts);
 }

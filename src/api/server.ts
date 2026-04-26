@@ -2,7 +2,8 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
-import { getCompanies, getCompany, getGenerations } from '../db.js';
+import { getCompanies, getCompany, getGenerations, getGenerationsByCompany } from '../db.js';
+import { generateWebsite } from '../generate/worker.js';
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
@@ -89,20 +90,47 @@ app.get('/api/companies/:id', (req: Request, res: Response, next: NextFunction) 
 
 /**
  * POST /api/companies/:id/generate
- * Stub endpoint — the generation worker is not yet implemented.
+ * Body: { extra_prompt?: string; color_board?: string[] }
  */
-app.post('/api/companies/:id/generate', (req: Request, res: Response) => {
-  const id = parseInt(req.params.id, 10);
-  if (isNaN(id)) {
-    res.status(400).json({ error: 'Invalid company id' });
-    return;
-  }
+app.post('/api/companies/:id/generate', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid company id' });
+      return;
+    }
 
-  res.status(501).json({
-    error: 'Not implemented',
-    message: 'The site generation feature is coming soon.',
-    companyId: id,
-  });
+    const company = getCompany(id);
+    if (!company) {
+      res.status(404).json({ error: 'Company not found' });
+      return;
+    }
+
+    const { extra_prompt, color_board } = req.body as { extra_prompt?: string; color_board?: string[] };
+
+    const generation = await generateWebsite(company, { extra_prompt, color_board });
+    res.json(generation);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/companies/:id/generations
+ */
+app.get('/api/companies/:id/generations', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid company id' });
+      return;
+    }
+
+    const generations = getGenerationsByCompany(id);
+    res.json({ data: generations });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ─── Generations ───────────────────────────────────────────────────────────────
@@ -139,8 +167,9 @@ app.listen(PORT, () => {
   console.log(`  GET /health`);
   console.log(`  GET /api/companies`);
   console.log(`  GET /api/companies/:id`);
-  console.log(`  POST /api/companies/:id/generate (stub)`);
-  console.log(`  GET /api/generations?companyId=:id\n`);
+  console.log(`  POST /api/companies/:id/generate`);
+  console.log(`  GET  /api/companies/:id/generations`);
+  console.log(`  GET  /api/generations?companyId=:id\n`);
 });
 
 export default app;

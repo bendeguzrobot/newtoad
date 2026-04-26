@@ -12,5 +12,8 @@ scrape input="companies.csv":
 api:
   npx tsx src/api/server.ts
 
+toadit url:
+  npx tsx src/generate/toadit.ts {{url}}
+
 start:
   just api & cd web && npm run dev

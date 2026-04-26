@@ -1,7 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { fetchCompany } from '../api'
-import type { Company } from '../types'
+import { fetchCompany, fetchGenerations, triggerGenerate } from '../api'
+import type { Company, SiteGeneration } from '../types'
+
+// ---------------------------------------------------------------------------
+// Mood presets
+// ---------------------------------------------------------------------------
+const MOOD_PRESETS = [
+  { label: 'Professional', colors: ['#1a1a2e', '#16213e', '#0f3460', '#e94560'] },
+  { label: 'Fresh',        colors: ['#2d6a4f', '#40916c', '#74c69d', '#b7e4c7'] },
+  { label: 'Warm',         colors: ['#e76f51', '#f4a261', '#e9c46a', '#264653'] },
+  { label: 'Minimal',      colors: ['#ffffff', '#f5f5f5', '#222222', '#888888'] },
+] as const
 
 function parseColors(raw: string | null): string[] {
   if (!raw) return []
@@ -60,19 +70,73 @@ function Skeleton() {
 
 export default function DetailPage() {
   const { id } = useParams<{ id: string }>()
+
+  // Company data
   const [company, setCompany] = useState<Company | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Generated sites list
+  const [generations, setGenerations] = useState<SiteGeneration[]>([])
+
+  // Generation UI state
+  const [showOptions, setShowOptions] = useState(false)
+  const [extraPrompt, setExtraPrompt] = useState('')
+  const [selectedMood, setSelectedMood] = useState<number | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [genElapsed, setGenElapsed] = useState(0)
+  const [genError, setGenError] = useState<string | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     if (!id) return
     setLoading(true)
     setError(null)
-    fetchCompany(id)
-      .then(setCompany)
+    Promise.all([fetchCompany(id), fetchGenerations(id)])
+      .then(([c, gens]) => {
+        setCompany(c)
+        setGenerations(gens)
+      })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setLoading(false))
   }, [id])
+
+  // Elapsed-time counter while generating
+  useEffect(() => {
+    if (generating) {
+      setGenElapsed(0)
+      timerRef.current = setInterval(() => {
+        setGenElapsed((s) => s + 1)
+      }, 1000)
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [generating])
+
+  async function handleGenerate() {
+    if (!id) return
+    setGenerating(true)
+    setGenError(null)
+    try {
+      const colorBoard =
+        selectedMood !== null ? [...MOOD_PRESETS[selectedMood].colors] : undefined
+      const result = await triggerGenerate(id, {
+        extra_prompt: extraPrompt || undefined,
+        color_board: colorBoard,
+      })
+      setGenerations((prev) => [result, ...prev])
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : 'Generation failed')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   if (loading) return <Skeleton />
 
@@ -189,6 +253,148 @@ export default function DetailPage() {
         <section className="bg-gray-800 rounded-xl p-5 border border-gray-700 space-y-2">
           <h2 className="text-xs text-gray-500 uppercase tracking-wider">Extracted Copy</h2>
           <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">{company.copy}</p>
+        </section>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Generate section                                                    */}
+      {/* ------------------------------------------------------------------ */}
+      <section className="bg-gray-800 rounded-xl p-5 border border-gray-700 space-y-4">
+        <h2 className="text-xs text-gray-500 uppercase tracking-wider">Website Generator</h2>
+
+        {/* Primary action row */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+          >
+            {generating ? (
+              <>
+                {/* Spinner */}
+                <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                Generating… {genElapsed}s
+              </>
+            ) : (
+              'Create New Website'
+            )}
+          </button>
+
+          <button
+            onClick={() => setShowOptions((v) => !v)}
+            className="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1"
+          >
+            {showOptions ? '▴' : '▾'} More options
+          </button>
+        </div>
+
+        {/* Expanded options */}
+        {showOptions && (
+          <div className="space-y-4 pt-1">
+            {/* Custom prompt */}
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500 uppercase tracking-wider">Custom prompt</label>
+              <textarea
+                value={extraPrompt}
+                onChange={(e) => setExtraPrompt(e.target.value)}
+                rows={3}
+                placeholder="Describe any specific requirements…"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-emerald-500 resize-none"
+              />
+            </div>
+
+            {/* Mood presets */}
+            <div className="space-y-2">
+              <p className="text-xs text-gray-500 uppercase tracking-wider">Mood</p>
+              <div className="flex flex-wrap gap-2">
+                {MOOD_PRESETS.map((preset, i) => (
+                  <button
+                    key={preset.label}
+                    onClick={() => setSelectedMood(selectedMood === i ? null : i)}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                      selectedMood === i
+                        ? 'border-emerald-500 bg-emerald-900/30 text-emerald-300'
+                        : 'border-gray-600 bg-gray-700 text-gray-300 hover:border-gray-400'
+                    }`}
+                  >
+                    {preset.colors.map((c) => (
+                      <span
+                        key={c}
+                        className="w-3 h-3 rounded-sm border border-black/20 shrink-0"
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {genError && (
+          <div className="bg-red-900/40 border border-red-700 text-red-300 rounded-lg px-4 py-3 text-sm">
+            {genError}
+          </div>
+        )}
+      </section>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Generated sites gallery                                             */}
+      {/* ------------------------------------------------------------------ */}
+      {generations.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-xs text-gray-500 uppercase tracking-wider">Generated Sites</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {generations.map((gen) => {
+              const domain = company.domain ?? ''
+              const screenshotUrl = `/data/websites/${domain}/gen/${gen.id}/screenshot.png`
+              const htmlUrl = `/data/websites/${domain}/gen/${gen.id}/index.html`
+              const generatedDate = new Date(gen.created_at).toLocaleString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              })
+              return (
+                <div
+                  key={gen.id}
+                  className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700 flex flex-col"
+                >
+                  {/* Thumbnail */}
+                  <div className="aspect-video bg-gray-700 overflow-hidden">
+                    <img
+                      src={screenshotUrl}
+                      alt={`Generated site ${gen.id}`}
+                      className="w-full h-full object-cover object-top"
+                      loading="lazy"
+                      onError={(e) => {
+                        ;(e.currentTarget as HTMLImageElement).style.display = 'none'
+                      }}
+                    />
+                  </div>
+
+                  {/* Footer */}
+                  <div className="p-3 flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-xs text-gray-400">{generatedDate}</span>
+                    <a
+                      href={htmlUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors underline underline-offset-2"
+                    >
+                      View HTML
+                    </a>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </section>
       )}
 

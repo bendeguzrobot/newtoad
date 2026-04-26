@@ -138,3 +138,12 @@ export function getGenerations(companyId: number): SiteGeneration[] {
     .prepare('SELECT * FROM site_generations WHERE company_id = ? ORDER BY created_at DESC')
     .all(companyId) as SiteGeneration[];
 }
+
+export function getGenerationsByCompany(companyId: number): SiteGeneration[] {
+  return getGenerations(companyId);
+}
+
+export function incrementUpgradedCount(companyId: number): void {
+  const database = getDb();
+  database.prepare('UPDATE companies SET upgraded_webpage_count = upgraded_webpage_count + 1 WHERE id = ?').run(companyId);
+}
