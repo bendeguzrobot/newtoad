@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-900 text-gray-100 antialiased;
+  }
+}
+
+@layer components {
+  .score-bar {
+    @apply h-1.5 rounded-full bg-gray-700 overflow-hidden;
+  }
+  .score-bar-fill {
+    @apply h-full rounded-full transition-all;
+  }
+}
