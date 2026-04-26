@@ -15,7 +15,7 @@ import { analyzeWebsite } from './analyzer.js';
 import { getDb, upsertCompany } from '../db.js';
 import type { Company, CrawlResult } from '../types.js';
 
-interface CsvRow { name: string; notes?: string; }
+interface CsvRow { name: string; url?: string; notes?: string; }
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const WEBSITES_DIR = path.join(DATA_DIR, 'websites');
@@ -201,18 +201,22 @@ async function csvMode(csvPath: string, force: boolean): Promise<void> {
     let company = existing ?? upsertCompany({ name });
     if (!existing) console.log(`  Created DB entry (id=${company.id})`);
 
-    // Search
-    let url: string | null = null;
-    try {
-      console.log(`  Searching...`);
-      url = await searchWeb(name);
-      if (!url) { console.log('  No URL found, skipping.'); continue; }
-      console.log(`  Found: ${url}`);
-      if (SUSPICIOUS.some(d => url!.includes(d)))
-        console.warn(`  ⚠️  Looks like a search engine result, not company site!`);
-    } catch (err) {
-      console.error(`  Search failed: ${err instanceof Error ? err.message : String(err)}`);
-      continue;
+    // Use URL from CSV if provided, otherwise search
+    let url: string | null = rows[i].url?.trim() || null;
+    if (url) {
+      console.log(`  URL from CSV: ${url}`);
+    } else {
+      try {
+        console.log(`  Searching...`);
+        url = await searchWeb(name);
+        if (!url) { console.log('  No URL found, skipping.'); continue; }
+        console.log(`  Found: ${url}`);
+        if (SUSPICIOUS.some(d => url!.includes(d)))
+          console.warn(`  ⚠️  Looks like a search engine result, not company site!`);
+      } catch (err) {
+        console.error(`  Search failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
     }
 
     const domain = extractDomain(url);
